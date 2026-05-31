@@ -4,7 +4,7 @@ import {
   ChevronLeft, Trash2, Flame, ChevronDown, ChevronRight, ChevronUp, Play, Pause, RotateCcw,
   CalendarDays, Volume2, VolumeX, Trophy, Download, Upload,
   LogOut, ListChecks, Pencil, UtensilsCrossed, Search, Target, Scale, ScanLine, Camera, Flashlight, Star, PlayCircle,
-  Copy, Save, BookOpen
+  Copy, Save, BookOpen, Share2
 } from "lucide-react";
 import { api } from "./api.js";
 
@@ -149,6 +149,100 @@ function tutorialUrl(name, variation) {
 }
 const openTutorial = (name, variation) =>
   window.open(tutorialUrl(name, variation), "_blank", "noopener,noreferrer");
+
+/* ----------------------- SHAREABLE WORKOUT CARD ------------------------- */
+function rrect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  if (ctx.roundRect) { ctx.roundRect(x, y, w, h, r); return; }
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function wrapText(ctx, text, x, y, maxW, lh) {
+  const words = String(text).split(" ");
+  let line = "";
+  for (const w of words) {
+    const test = line ? line + " " + w : w;
+    if (ctx.measureText(test).width > maxW && line) { ctx.fillText(line, x, y); line = w; y += lh; }
+    else line = test;
+  }
+  if (line) ctx.fillText(line, x, y);
+  return y;
+}
+
+// Render a 1080×1080 summary image for a finished workout and share/download it.
+async function shareWorkoutCard(session, stats) {
+  try { await document.fonts?.ready; } catch { /* fonts optional */ }
+  const S = 1080, P = 84;
+  const cv = document.createElement("canvas");
+  cv.width = S; cv.height = S;
+  const ctx = cv.getContext("2d");
+
+  ctx.fillStyle = "#0a0b0d"; ctx.fillRect(0, 0, S, S);
+  const glow = ctx.createRadialGradient(S * 0.95, S * 0.05, 0, S * 0.95, S * 0.05, S * 0.85);
+  glow.addColorStop(0, "rgba(216,255,54,0.13)"); glow.addColorStop(1, "rgba(216,255,54,0)");
+  ctx.fillStyle = glow; ctx.fillRect(0, 0, S, S);
+  ctx.fillStyle = "#d8ff36"; ctx.fillRect(0, 0, 12, S);
+
+  ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = "#d8ff36"; ctx.font = "700 42px Oswald, sans-serif"; ctx.fillText("▚", P, P + 36);
+  ctx.fillStyle = "#f2f4f5"; ctx.font = "700 42px Oswald, sans-serif"; ctx.fillText("IRONLOG", P + 60, P + 36);
+
+  let y = P + 160;
+  const tag = session.tag || "DAY";
+  ctx.font = "700 26px 'Space Mono', monospace";
+  const tw = ctx.measureText(tag).width;
+  ctx.fillStyle = "#d8ff36"; rrect(ctx, P, y - 36, tw + 40, 50, 10); ctx.fill();
+  ctx.fillStyle = "#101200"; ctx.fillText(tag, P + 20, y);
+  ctx.fillStyle = "#8b9199"; ctx.font = "400 28px Archivo, sans-serif";
+  ctx.fillText(fmtDate(session.startedAt), P + tw + 62, y);
+
+  y += 96;
+  ctx.fillStyle = "#f2f4f5"; ctx.font = "600 66px Oswald, sans-serif";
+  y = wrapText(ctx, session.dayName, P, y, S - P * 2, 74);
+
+  y += 70;
+  const cells = [
+    { n: Math.round(stats.volume).toLocaleString(), l: "lbs volume" },
+    { n: stats.setCount, l: "sets" },
+    { n: stats.exCount, l: "exercises" },
+    { n: stats.prCount, l: stats.prCount === 1 ? "PR" : "PRs" },
+  ];
+  const cw = (S - P * 2 - 24) / 2, ch = 150;
+  cells.forEach((c, i) => {
+    const cx = P + (i % 2) * (cw + 24);
+    const cy = y + Math.floor(i / 2) * (ch + 20);
+    ctx.fillStyle = "#15171b"; ctx.strokeStyle = "#2a2e36"; ctx.lineWidth = 2;
+    rrect(ctx, cx, cy, cw, ch, 16); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#d8ff36"; ctx.font = "700 60px 'Space Mono', monospace";
+    ctx.fillText(String(c.n), cx + 28, cy + 82);
+    ctx.fillStyle = "#8b9199"; ctx.font = "400 25px Archivo, sans-serif";
+    ctx.fillText(c.l, cx + 28, cy + 120);
+  });
+  y += 2 * ch + 20;
+
+  if (stats.topLift) {
+    y += 50;
+    ctx.fillStyle = "#8b9199"; ctx.font = "700 22px 'Space Mono', monospace"; ctx.fillText("TOP LIFT", P, y);
+    ctx.fillStyle = "#f2f4f5"; ctx.font = "600 40px Oswald, sans-serif";
+    wrapText(ctx, `${stats.topLift.name} · ${stats.topLift.e1rm} est 1RM`, P, y + 52, S - P * 2, 46);
+  }
+
+  ctx.fillStyle = "#8b9199"; ctx.font = "700 26px 'Space Mono', monospace";
+  ctx.fillText("lokoto-ironlog.fly.dev", P, S - P + 10);
+
+  const blob = await new Promise((r) => cv.toBlob(r, "image/png", 0.95));
+  const file = new File([blob], "ironlog-workout.png", { type: "image/png" });
+  const text = `${session.dayName} — logged on IRONLOG 💪`;
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], text, title: "IRONLOG" }); return; }
+    catch (e) { if (e && e.name === "AbortError") return; }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "ironlog-workout.png"; a.click();
+  URL.revokeObjectURL(url);
+}
 
 /* ================================================================== */
 /*  ROOT                                                               */
@@ -357,7 +451,7 @@ export default function App() {
     return (
       <div className="wt-root">
         <FontsAndStyles /><div className="grain" />
-        <GoogleSignIn onLogin={onLogin} />
+        <Landing onLogin={onLogin} />
       </div>
     );
   }
@@ -508,22 +602,54 @@ function GoogleSignIn({ onLogin }) {
   }, [clientId, onLogin]);
 
   return (
-    <div className="login fade-in">
-      <div className="login-brand">
+    <div className="signin">
+      <div ref={btnRef} className="gbtn-wrap" />
+      {busy && <div className="login-note" style={{ marginTop: 4 }}>Signing you in…</div>}
+      {err && <div className="login-err">{err}</div>}
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  LANDING  (marketing page for logged-out visitors)                  */
+/* ================================================================== */
+const LANDING_FEATURES = [
+  { icon: <Dumbbell size={22} />, title: "Train smarter", text: "Editable programs, set logging, a rest timer, PRs and estimated 1RM — plus in-app form guides for every lift." },
+  { icon: <UtensilsCrossed size={22} />, title: "Track macros", text: "Search a huge food database or scan a barcode. Calories & macros vs your goal, organized by breakfast / lunch / dinner." },
+  { icon: <TrendingUp size={22} />, title: "See progress", text: "Strength trends per lift, a body-weight chart, a training calendar, and streaks that keep you coming back." },
+  { icon: <Target size={22} />, title: "Hit your goal", text: "Tell it your stats and goal — lose fat, bulk or maintain — and it sets your daily calorie & macro targets automatically." },
+];
+
+function Landing({ onLogin }) {
+  return (
+    <div className="landing fade-in">
+      <header className="lp-hero">
         <span className="brand-mark big">▚</span>
         <h1>IRONLOG</h1>
-        <p>Sign in to sync your training across devices</p>
+        <p className="lp-tag">Your gym and your kitchen, in one app.</p>
+        <p className="lp-sub">Log workouts, track macros, and watch your strength and weight trend — free, on every device.</p>
+        <div className="lp-cta"><GoogleSignIn onLogin={onLogin} /></div>
+        <p className="login-note" style={{ maxWidth: 320 }}>Sign in with Google — we only use it to identify your account. Your data is private and synced across your devices.</p>
+      </header>
+
+      <div className="lp-features">
+        {LANDING_FEATURES.map((f) => (
+          <div className="lp-card" key={f.title}>
+            <span className="lp-ico">{f.icon}</span>
+            <h3>{f.title}</h3>
+            <p>{f.text}</p>
+          </div>
+        ))}
       </div>
 
-      <div className="login-form" style={{ alignItems: "center" }}>
-        <div ref={btnRef} className="gbtn-wrap" />
-        {busy && <div className="login-note" style={{ marginTop: 4 }}>Signing you in…</div>}
-        {err && <div className="login-err">{err}</div>}
-        <p className="login-note">
-          We use Google only to identify your account. Your workout history is stored on
-          the app's own server and synced to every device you sign in on.
-        </p>
+      <div className="lp-strip">
+        <span><ScanLine size={14} /> Barcode scanning</span>
+        <span><BookOpen size={14} /> Saved meals</span>
+        <span><Trophy size={14} /> PRs & 1RM</span>
+        <span><CalendarDays size={14} /> Streaks</span>
       </div>
+
+      <p className="lp-foot">Install it to your home screen for a full-screen, offline-ready app.</p>
     </div>
   );
 }
@@ -1301,6 +1427,9 @@ function HistoryView({ sessions, onDelete, onImport }) {
         const vol = s.exercises.reduce((t, e) =>
           t + e.sets.reduce((x, st) => x + (parseFloat(st.w) || 0) * (parseFloat(st.r) || 0), 0), 0);
         const prCount = prFlags[s.id]?.size || 0;
+        let topLift = null, topE = 0;
+        for (const ex of s.exercises) { const e = bestSetE1rm(ex.sets); if (e > topE) { topE = e; topLift = { name: ex.name, e1rm: Math.round(e) }; } }
+        const shareStats = { volume: vol, setCount, exCount: s.exercises.length, prCount, topLift };
         return (
           <div className="hist-card" key={s.id}>
             <button className="hist-head" onClick={() => setOpenId(open ? null : s.id)}>
@@ -1338,9 +1467,14 @@ function HistoryView({ sessions, onDelete, onImport }) {
                     </div>
                   );
                 })}
-                <button className="btn-danger sm" onClick={() => onDelete(s.id)}>
-                  <Trash2 size={14} /> Delete
-                </button>
+                <div className="hist-actions">
+                  <button className="hist-share" onClick={() => shareWorkoutCard(s, shareStats)}>
+                    <Share2 size={14} /> Share
+                  </button>
+                  <button className="btn-danger sm" style={{ marginTop: 0 }} onClick={() => onDelete(s.id)}>
+                    <Trash2 size={14} /> Delete
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -2671,6 +2805,27 @@ function FontsAndStyles() {
       .login-back { background:none; border:none; color:var(--muted); font-family:'Archivo'; font-size:13px; cursor:pointer; padding:6px; }
       .login-note { font-size:11.5px; line-height:1.6; color:var(--muted); text-align:center; margin:8px 0 0; }
       .gbtn-wrap { display:flex; justify-content:center; min-height:44px; margin:6px 0 2px; color-scheme:light; }
+      .signin { display:flex; flex-direction:column; align-items:center; gap:8px; }
+
+      /* LANDING */
+      .landing { max-width:560px; margin:0 auto; padding:calc(40px + env(safe-area-inset-top)) 22px calc(40px + env(safe-area-inset-bottom)); }
+      .lp-hero { text-align:center; display:flex; flex-direction:column; align-items:center; }
+      .lp-hero h1 { font-size:46px; font-weight:700; margin-top:4px; }
+      .lp-tag { margin:14px 0 0; font-family:'Oswald'; font-weight:600; font-size:22px; color:var(--text); line-height:1.25; max-width:360px; }
+      .lp-sub { margin:10px 0 0; font-size:14px; line-height:1.6; color:var(--muted); max-width:360px; }
+      .lp-cta { margin:24px 0 10px; }
+      .lp-features { display:grid; gap:12px; margin:34px 0 0; }
+      .lp-card { background:linear-gradient(150deg, var(--surface2), var(--surface)); border:1px solid var(--line);
+        border-radius:16px; padding:18px; }
+      .lp-ico { display:inline-flex; align-items:center; justify-content:center; width:42px; height:42px; border-radius:11px;
+        background:rgba(216,255,54,.1); color:var(--accent); border:1px solid rgba(216,255,54,.3); }
+      .lp-card h3 { font-size:18px; font-weight:600; margin:12px 0 0; }
+      .lp-card p { margin:6px 0 0; font-size:13px; line-height:1.6; color:var(--muted); }
+      .lp-strip { display:flex; flex-wrap:wrap; justify-content:center; gap:10px 18px; margin:26px 0 0; }
+      .lp-strip span { display:flex; align-items:center; gap:6px; font-family:'Space Mono',monospace; font-size:11px;
+        font-weight:700; color:var(--muted); }
+      .lp-strip svg { color:var(--accent); }
+      .lp-foot { text-align:center; margin:26px 0 0; font-size:12px; color:var(--muted); }
 
       .content { padding:8px 16px 110px; }
       .section-label { font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--muted); margin:14px 4px 14px; }
@@ -2874,6 +3029,11 @@ function FontsAndStyles() {
         font-family:'Archivo'; font-weight:600; padding:12px; border-radius:11px; cursor:pointer;
         display:flex; align-items:center; justify-content:center; gap:6px; }
       .btn-danger.sm { flex:none; margin-top:12px; padding:9px 14px; font-size:13px; }
+      .hist-actions { display:flex; gap:10px; margin-top:12px; }
+      .hist-share { display:flex; align-items:center; gap:6px; background:var(--accent); color:#101200; border:none;
+        border-radius:11px; font-family:'Archivo'; font-weight:700; font-size:13px; padding:9px 16px; cursor:pointer; }
+      .hist-share:active { transform:scale(.98); }
+      .hist-share svg { color:#101200; }
 
       /* HISTORY */
       .hist-card { background:var(--surface); border:1px solid var(--line); border-radius:14px; margin-bottom:11px; overflow:hidden; }
