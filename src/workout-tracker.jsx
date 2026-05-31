@@ -1488,7 +1488,106 @@ function HistoryView({ sessions, onDelete, onImport }) {
 /* ================================================================== */
 /*  PROGRESS VIEW                                                      */
 /* ================================================================== */
+/* ----------------------- STREAKS & ACHIEVEMENTS ------------------------- */
+function streaks(sessions) {
+  if (!sessions.length) return { current: 0, longest: 0 };
+  const DAY = 86400000;
+  const days = new Set(sessions.map((s) => dateKey(s.startedAt)));
+  const ts = [...new Set(sessions.map((s) => { const d = new Date(s.startedAt); d.setHours(0, 0, 0, 0); return d.getTime(); }))].sort((a, b) => a - b);
+  let longest = 1, run = 1;
+  for (let i = 1; i < ts.length; i++) {
+    if (ts[i] - ts[i - 1] === DAY) { run++; longest = Math.max(longest, run); }
+    else { run = 1; }
+  }
+  const has = (t) => days.has(dateKey(t));
+  let cur = new Date(); cur.setHours(0, 0, 0, 0);
+  if (!has(cur.getTime())) cur.setTime(cur.getTime() - DAY); // allow "yesterday" start
+  let current = 0;
+  while (has(cur.getTime())) { current++; cur.setTime(cur.getTime() - DAY); }
+  return { current, longest };
+}
+
+function computeAchievements(sessions) {
+  const n = sessions.length;
+  const totalVolume = Math.round(sessions.reduce((t, s) =>
+    t + s.exercises.reduce((x, e) => x + e.sets.reduce((y, st) => y + (parseFloat(st.w) || 0) * (parseFloat(st.r) || 0), 0), 0), 0));
+  let prCount = 0;
+  const best = {};
+  for (const s of [...sessions].sort((a, b) => a.startedAt - b.startedAt)) {
+    for (const ex of s.exercises) {
+      const k = `${ex.name}|${ex.variation || ""}`;
+      const v = bestSetE1rm(ex.sets);
+      if (v > 0 && v > (best[k] || 0)) prCount++;
+      if (v > (best[k] || 0)) best[k] = v;
+    }
+  }
+  const distinct = new Set(sessions.flatMap((s) => s.exercises.map((e) => e.name))).size;
+  const { current: currentStreak, longest: longestStreak } = streaks(sessions);
+  return { n, totalVolume, prCount, distinct, currentStreak, longestStreak };
+}
+
+const ACHIEVEMENTS = [
+  { id: "first", key: "n", goal: 1, icon: <Dumbbell size={20} />, title: "First Lift", desc: "Log your first workout" },
+  { id: "w10", key: "n", goal: 10, icon: <Dumbbell size={20} />, title: "Getting Serious", desc: "10 workouts logged" },
+  { id: "w50", key: "n", goal: 50, icon: <Trophy size={20} />, title: "Half Century", desc: "50 workouts logged" },
+  { id: "w100", key: "n", goal: 100, icon: <Trophy size={20} />, title: "Centurion", desc: "100 workouts logged" },
+  { id: "s3", key: "longestStreak", goal: 3, icon: <Flame size={20} />, title: "Warmed Up", desc: "3-day workout streak" },
+  { id: "s7", key: "longestStreak", goal: 7, icon: <Flame size={20} />, title: "On Fire", desc: "7-day workout streak" },
+  { id: "s30", key: "longestStreak", goal: 30, icon: <Flame size={20} />, title: "Unstoppable", desc: "30-day workout streak" },
+  { id: "pr1", key: "prCount", goal: 1, icon: <Trophy size={20} />, title: "New PR!", desc: "Set your first personal record" },
+  { id: "pr10", key: "prCount", goal: 10, icon: <Star size={20} />, title: "PR Machine", desc: "Set 10 personal records" },
+  { id: "v100k", key: "totalVolume", goal: 100000, icon: <Scale size={20} />, title: "Heavy Hauler", desc: "Move 100k lbs total" },
+  { id: "v1m", key: "totalVolume", goal: 1000000, icon: <Scale size={20} />, title: "Iron Mountain", desc: "Move 1,000,000 lbs total" },
+  { id: "explore", key: "distinct", goal: 15, icon: <ListChecks size={20} />, title: "Explorer", desc: "Train 15 different exercises" },
+];
+
+function AchievementsView({ sessions }) {
+  const a = computeAchievements(sessions);
+  const earned = ACHIEVEMENTS.filter((x) => a[x.key] >= x.goal).length;
+  return (
+    <div className="fade-in">
+      <div className="stat-row">
+        <div className="stat"><span className="stat-n">{a.currentStreak}</span><span className="stat-l">day streak</span></div>
+        <div className="stat"><span className="stat-n">{a.longestStreak}</span><span className="stat-l">best streak</span></div>
+        <div className="stat"><span className="stat-n">{a.n}</span><span className="stat-l">workouts</span></div>
+      </div>
+      <div className="section-label" style={{ margin: "4px 4px 12px" }}>{earned} of {ACHIEVEMENTS.length} badges earned</div>
+      <div className="badge-grid">
+        {ACHIEVEMENTS.map((x) => {
+          const val = a[x.key] || 0;
+          const done = val >= x.goal;
+          const pct = Math.min(100, Math.round((val / x.goal) * 100));
+          return (
+            <div className={`badge ${done ? "badge-on" : ""}`} key={x.id}>
+              <div className="badge-ico">{x.icon}</div>
+              <div className="badge-text">
+                <strong>{x.title}</strong>
+                <span>{x.desc}</span>
+              </div>
+              {done ? <span className="badge-check"><Check size={16} /></span>
+                : <div className="badge-prog"><div className="badge-prog-fill" style={{ width: `${pct}%` }} /></div>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ProgressView({ sessions }) {
+  const [tab, setTab] = useState("trends");
+  return (
+    <div className="fade-in">
+      <div className="metric-tabs">
+        <button className={tab === "trends" ? "mt-on" : ""} onClick={() => setTab("trends")}>Strength</button>
+        <button className={tab === "awards" ? "mt-on" : ""} onClick={() => setTab("awards")}>Awards</button>
+      </div>
+      {tab === "trends" ? <StrengthTrends sessions={sessions} /> : <AchievementsView sessions={sessions} />}
+    </div>
+  );
+}
+
+function StrengthTrends({ sessions }) {
   const names = Array.from(new Set(sessions.flatMap((s) => s.exercises.map((e) => e.name)))).sort();
   const [sel, setSel] = useState(names[0] || null);
   const [metric, setMetric] = useState("e1rm"); // e1rm | top
@@ -2985,6 +3084,22 @@ function FontsAndStyles() {
       .metric-tabs button { flex:1; background:none; border:none; color:var(--muted); font-family:'Oswald';
         font-weight:600; font-size:14px; letter-spacing:.03em; padding:9px; border-radius:9px; cursor:pointer; transition:all .15s; }
       .metric-tabs button.mt-on { background:var(--accent); color:#101200; }
+
+      /* ACHIEVEMENTS */
+      .badge-grid { display:flex; flex-direction:column; gap:10px; }
+      .badge { display:flex; align-items:center; gap:12px; background:var(--surface); border:1px solid var(--line);
+        border-radius:14px; padding:13px 14px; opacity:.55; transition:opacity .2s; }
+      .badge-on { opacity:1; border-color:rgba(216,255,54,.4); }
+      .badge-ico { width:44px; height:44px; flex-shrink:0; border-radius:11px; display:flex; align-items:center;
+        justify-content:center; background:var(--surface2); color:var(--muted); border:1px solid var(--line); }
+      .badge-on .badge-ico { background:rgba(216,255,54,.12); color:var(--accent); border-color:rgba(216,255,54,.4); }
+      .badge-text { flex:1; min-width:0; }
+      .badge-text strong { font-family:'Oswald'; font-weight:600; font-size:16px; display:block; }
+      .badge-text span { font-size:12px; color:var(--muted); }
+      .badge-check { width:30px; height:30px; flex-shrink:0; border-radius:99px; background:var(--accent); color:#101200;
+        display:flex; align-items:center; justify-content:center; }
+      .badge-prog { width:54px; flex-shrink:0; height:6px; background:var(--surface2); border-radius:99px; overflow:hidden; }
+      .badge-prog-fill { height:100%; background:var(--muted); border-radius:99px; }
 
       .add-set { margin-top:6px; width:100%; background:none; border:1px dashed var(--line); color:var(--muted);
         font-family:'Archivo'; font-weight:600; font-size:13px; padding:10px; border-radius:10px; cursor:pointer;
