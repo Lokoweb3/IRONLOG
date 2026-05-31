@@ -3,7 +3,7 @@ import {
   Dumbbell, History, TrendingUp, Plus, Check, X, Timer,
   ChevronLeft, Trash2, Flame, ChevronDown, ChevronRight, ChevronUp, Play, Pause, RotateCcw,
   CalendarDays, Volume2, VolumeX, Trophy, Download, Upload,
-  LogOut, ListChecks, Pencil, UtensilsCrossed, Search, Target, Scale, ScanLine, Camera, Flashlight, Star
+  LogOut, ListChecks, Pencil, UtensilsCrossed, Search, Target, Scale, ScanLine, Camera, Flashlight, Star, PlayCircle
 } from "lucide-react";
 import { api } from "./api.js";
 
@@ -139,6 +139,15 @@ function lastPerformance(sessions, name, variation, excludeId) {
 }
 
 const isLogged = (st) => st.w !== "" || st.r !== "";
+
+// A proper-form tutorial search for any exercise (+ its variation). Works for
+// custom exercises too since it's just a search query.
+function tutorialUrl(name, variation) {
+  const q = `how to ${name}${variation ? " " + variation : ""} proper form technique`;
+  return `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`;
+}
+const openTutorial = (name, variation) =>
+  window.open(tutorialUrl(name, variation), "_blank", "noopener,noreferrer");
 
 /* ================================================================== */
 /*  ROOT                                                               */
@@ -802,6 +811,9 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
                 <span className="ex-num">{String(ei + 1).padStart(2, "0")}</span>
                 <h3>{ex.name}</h3>
                 {isPR && <span className="pr-badge"><Trophy size={11} /> PR</span>}
+                <button className="howto-btn" onClick={() => openTutorial(ex.name, ex.variation)} title="How to perform this exercise">
+                  <PlayCircle size={13} /> How-to
+                </button>
               </div>
 
               {ex.variations.length > 0 && (
@@ -2336,6 +2348,11 @@ function FontsAndStyles() {
       .ex-head { display:flex; align-items:baseline; gap:9px; }
       .ex-num { font-family:'Space Mono',monospace; font-size:12px; color:var(--accent); font-weight:700; }
       .ex-head h3 { font-size:17px; font-weight:600; }
+      .howto-btn { margin-left:auto; align-self:center; display:flex; align-items:center; gap:5px; flex-shrink:0;
+        background:var(--surface2); border:1px solid var(--line); color:var(--muted); font-family:'Archivo';
+        font-weight:600; font-size:11px; padding:5px 10px; border-radius:99px; cursor:pointer; }
+      .howto-btn:active { border-color:var(--accent); color:var(--accent); }
+      .howto-btn svg { color:var(--accent); }
 
       .var-row { display:flex; flex-wrap:wrap; gap:7px; margin:11px 0 4px; }
       .var-pill { background:var(--surface2); border:1px solid var(--line); color:var(--muted); font-family:'Archivo';
