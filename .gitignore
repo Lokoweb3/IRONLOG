@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.*.local
+
+# SQLite database + write-ahead-log files (user data — never commit)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+*.log
+.DS_Store
+certs/
+
+# local editor / Claude Code settings
+.claude/

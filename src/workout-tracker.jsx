@@ -1,0 +1,2695 @@
+import React, { useState, useEffect, useRef, useCallback, lazy, Suspense } from "react";
+import {
+  Dumbbell, History, TrendingUp, Plus, Check, X, Timer,
+  ChevronLeft, Trash2, Flame, ChevronDown, ChevronRight, ChevronUp, Play, Pause, RotateCcw,
+  CalendarDays, Volume2, VolumeX, Trophy, Download, Upload,
+  LogOut, ListChecks, Pencil, UtensilsCrossed, Search, Target, Scale, ScanLine, Camera, Flashlight, Star
+} from "lucide-react";
+import { api } from "./api.js";
+
+// recharts is heavy and only used on Progress/Profile — load it as a separate
+// chunk on demand so it stays out of the initial bundle.
+const TrendChart = lazy(() => import("./TrendChart.jsx"));
+const ChartFallback = () => <p className="chart-hint" style={{ padding: 40 }}>Loading chart…</p>;
+
+/* ------------------------------------------------------------------ */
+/*  PROGRAM COLORS                                                     */
+/*  The training program itself is now per-user data loaded from the    */
+/*  API (the old hardcoded WORKOUTS lives server-side as the default    */
+/*  seed). Days carry their own `color`; these helpers pick/derive one. */
+/* ------------------------------------------------------------------ */
+const DAY_PALETTE = [
+  "#d8ff36", "#46d9ff", "#ffb13e", "#ff6fd0",
+  "#7c9cff", "#9cff6f", "#ff8f6f", "#c46fff",
+];
+// colors of the original 4-day split, so pre-existing history stays consistent
+const LEGACY_DAY_COLOR = { lower1: "#d8ff36", upper1: "#46d9ff", lower2: "#ffb13e", upper2: "#ff6fd0" };
+
+function hashColor(key) {
+  let h = 0;
+  for (let i = 0; i < (key || "").length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return DAY_PALETTE[h % DAY_PALETTE.length];
+}
+// Resolve a calendar color for a session's dayKey: prefer the live program day's
+// color, fall back to the legacy split, then a stable hash. (Sessions are
+// snapshots, so editing/deleting a program day never breaks history.)
+function colorForDayKey(dayKey, program) {
+  const d = (program || []).find((x) => x.key === dayKey);
+  return d?.color || LEGACY_DAY_COLOR[dayKey] || hashColor(dayKey);
+}
+
+/* ------------------------------------------------------------------ */
+/*  ACTIVE-DRAFT PERSISTENCE                                            */
+/*  Finished workouts live on the server (see ./api.js). The ONE thing  */
+/*  we still keep on-device is the in-progress session draft, so a mid- */
+/*  workout refresh or accidental nav doesn't lose unsaved sets. Keyed  */
+/*  per user id; cleared on finish/cancel/logout.                       */
+/* ------------------------------------------------------------------ */
+const activeDraftKey = (userId) => `wt:u:${userId}:active`;
+
+function loadActiveDraft(userId) {
+  try {
+    const raw = localStorage.getItem(activeDraftKey(userId));
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+function saveActiveDraft(userId, value) {
+  try { localStorage.setItem(activeDraftKey(userId), JSON.stringify(value)); } catch {}
+}
+function clearActiveDraft(userId) {
+  try { localStorage.removeItem(activeDraftKey(userId)); } catch {}
+}
+
+/* ------------------------------------------------------------------ */
+/*  HELPERS                                                            */
+/* ------------------------------------------------------------------ */
+const uid = () => Math.random().toString(36).slice(2, 10);
+const fmtDate = (ts) =>
+  new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+const fmtShort = (ts) =>
+  new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+// timestamp <-> <input type="datetime-local"> value (local timezone)
+function tsToLocalInput(ts) {
+  const d = new Date(ts);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+const localInputToTs = (str) => new Date(str).getTime();
+const fmtRest = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+
+// estimated 1-rep max (Epley formula)
+const e1rm = (w, r) => {
+  const W = parseFloat(w) || 0, R = parseFloat(r) || 0;
+  if (!W || !R) return 0;
+  return W * (1 + R / 30);
+};
+const bestSetE1rm = (sets) => sets.reduce((m, s) => Math.max(m, e1rm(s.w, s.r)), 0);
+function historicalBestE1rm(sessions, name, variation, excludeId) {
+  let best = 0;
+  for (const s of sessions) {
+    if (s.id === excludeId) continue;
+    for (const ex of s.exercises) {
+      if (ex.name !== name) continue;
+      if (variation != null && ex.variation !== variation) continue;
+      best = Math.max(best, bestSetE1rm(ex.sets));
+    }
+  }
+  return best;
+}
+const fmtDateTime = (ts) =>
+  new Date(ts).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+
+// Build a live session from a program `day` object (from the user's program).
+function buildSession(day) {
+  return {
+    id: uid(),
+    dayKey: day.key,
+    dayName: day.name,
+    focus: day.focus,
+    tag: day.tag,
+    startedAt: Date.now(),
+    exercises: day.exercises.map((ex) => ({
+      key: uid(),
+      name: ex.name,
+      variations: ex.variations || [],
+      variation: (ex.variations && ex.variations[0]) || null,
+      sets: Array.from({ length: Math.max(1, Number(ex.sets) || 1) }, () => ({ w: "", r: "", done: false })),
+    })),
+  };
+}
+
+// most recent prior logged performance of an exercise (prefer same variation)
+function lastPerformance(sessions, name, variation, excludeId) {
+  const sorted = [...sessions].sort((a, b) => b.startedAt - a.startedAt);
+  let fallback = null;
+  for (const s of sorted) {
+    if (s.id === excludeId) continue;
+    for (const ex of s.exercises) {
+      if (ex.name !== name) continue;
+      const sets = ex.sets.filter((st) => st.w !== "" || st.r !== "");
+      if (!sets.length) continue;
+      if (ex.variation === variation) return { date: s.startedAt, variation: ex.variation, sets };
+      if (!fallback) fallback = { date: s.startedAt, variation: ex.variation, sets };
+    }
+  }
+  return fallback;
+}
+
+const isLogged = (st) => st.w !== "" || st.r !== "";
+
+/* ================================================================== */
+/*  ROOT                                                               */
+/* ================================================================== */
+export default function App() {
+  const [view, setView] = useState("train"); // train | calendar | history | progress
+  const [user, setUser] = useState(null);          // signed-in Google user (or null)
+  const [sessions, setSessions] = useState([]);
+  const [program, setProgram] = useState([]);      // the user's editable program (days)
+  const [onboarded, setOnboarded] = useState(true); // has the user chosen a program?
+  const [profile, setProfile] = useState(null);     // body stats / goal / macro targets
+  const [active, setActive] = useState(null);
+  const [booting, setBooting] = useState(true);    // resolving the current session
+  const [dataLoading, setDataLoading] = useState(false); // loading workouts from API
+  const [syncError, setSyncError] = useState("");
+
+  // boot: ask the server who we are (reads the session cookie)
+  useEffect(() => {
+    (async () => {
+      try {
+        const u = await api.me();
+        setUser(u);
+      } catch {
+        setUser(null);
+      }
+      setBooting(false);
+    })();
+  }, []);
+
+  // load the signed-in user's workouts + program whenever the user changes
+  useEffect(() => {
+    if (!user) { setSessions([]); setProgram([]); setProfile(null); setActive(null); return; }
+    setDataLoading(true);
+    (async () => {
+      try {
+        const [s, prog, prof] = await Promise.all([api.getWorkouts(), api.getProgram(), api.getProfile()]);
+        setSessions(Array.isArray(s) ? s : []);
+        setProgram(Array.isArray(prog?.days) ? prog.days : []);
+        setOnboarded(!!prog?.onboarded);
+        setProfile(prof || null);
+      } catch {
+        setSessions([]);
+        setProgram([]);
+        setOnboarded(true); // don't trap the user on the choice screen if the load failed
+      }
+      // resume any in-progress draft saved on this device for this user
+      setActive(loadActiveDraft(user.id));
+      setDataLoading(false);
+    })();
+  }, [user]);
+
+  // debounced persistence of the in-progress draft (local only, per user)
+  const activeTimer = useRef(null);
+  useEffect(() => {
+    if (!user || dataLoading) return;
+    if (activeTimer.current) clearTimeout(activeTimer.current);
+    activeTimer.current = setTimeout(() => {
+      if (active) saveActiveDraft(user.id, active);
+      else clearActiveDraft(user.id);
+    }, 600);
+    return () => activeTimer.current && clearTimeout(activeTimer.current);
+  }, [active, dataLoading, user]);
+
+  /* ---- auth actions ---- */
+  const onLogin = (u) => setUser(u);
+  const logout = async () => {
+    try { await api.logout(); } catch {}
+    if (user) clearActiveDraft(user.id);
+    setActive(null);
+    setSessions([]);
+    setProgram([]);
+    setProfile(null);
+    setOnboarded(true);
+    setUser(null);
+    setView("train");
+  };
+
+  const saveProfile = async (p) => {
+    setProfile(p);                       // optimistic
+    try { setProfile(await api.saveProfile(p)); }
+    catch { setSyncError("Couldn't save your profile — please try again."); }
+  };
+
+  /* ---- onboarding: new user picks a starting program ---- */
+  const chooseDefaultProgram = async () => {
+    const days = await api.resetProgram();        // seeds the default 4-day split
+    setProgram(Array.isArray(days) ? days : []);
+    setOnboarded(true);
+    setView("train");
+  };
+  const chooseBuildOwn = async () => {
+    const starter = [{ key: uid(), name: "Day 1", focus: "", tag: "D1", color: DAY_PALETTE[0], exercises: [] }];
+    const days = await api.saveProgram(starter);  // create a program row -> onboarded
+    setProgram(Array.isArray(days) ? days : starter);
+    setOnboarded(true);
+    setView("program");                            // drop them straight into the editor
+  };
+
+  /* ---- program editing (debounced save to the server) ---- */
+  const programTimer = useRef(null);
+  const updateProgram = useCallback((days) => {
+    setProgram(days);
+    if (programTimer.current) clearTimeout(programTimer.current);
+    programTimer.current = setTimeout(() => {
+      api.saveProgram(days).catch(() => setSyncError("Couldn't save program changes — they'll retry on next edit."));
+    }, 700);
+  }, []);
+  const resetProgram = async () => {
+    try {
+      const days = await api.resetProgram();
+      setProgram(Array.isArray(days) ? days : []);
+      setSyncError("");
+    } catch {
+      setSyncError("Couldn't reset the program — please try again.");
+    }
+  };
+
+  const startWorkout = (day) => setActive(buildSession(day));
+  const cancelWorkout = () => { setActive(null); if (user) clearActiveDraft(user.id); };
+
+  const finishWorkout = async () => {
+    const cleaned = {
+      ...active,
+      finishedAt: Date.now(),
+      exercises: active.exercises
+        .map((ex) => ({ ...ex, sets: ex.sets.filter(isLogged) }))
+        .filter((ex) => ex.sets.length > 0),
+    };
+    if (cleaned.exercises.length === 0) { cancelWorkout(); return; }
+    // optimistic: show it immediately, clear the draft, then sync to the server
+    setSessions((prev) => [...prev, cleaned]);
+    if (user) clearActiveDraft(user.id);
+    setActive(null);
+    setView("history");
+    setSyncError("");
+    try {
+      await api.createWorkout(cleaned);
+    } catch {
+      setSyncError("Couldn't save to the server — it'll stay until you retry or reload.");
+    }
+  };
+
+  const deleteSession = async (id) => {
+    const prev = sessions;
+    setSessions(prev.filter((s) => s.id !== id)); // optimistic
+    try {
+      await api.deleteWorkout(id);
+    } catch {
+      setSessions(prev); // roll back on failure
+      setSyncError("Couldn't delete that workout — please try again.");
+    }
+  };
+
+  const importSessions = async (incoming) => {
+    if (!Array.isArray(incoming)) throw new Error("bad file");
+    const added = await api.importWorkouts(incoming);   // server merges by client id
+    const fresh = await api.getWorkouts();              // re-pull the merged result
+    setSessions(Array.isArray(fresh) ? fresh : []);
+    return added;
+  };
+
+  if (booting) {
+    return (
+      <div className="wt-root">
+        <FontsAndStyles /><div className="grain" />
+        <div className="loader"><Dumbbell size={28} /><span>Loading…</span></div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="wt-root">
+        <FontsAndStyles /><div className="grain" />
+        <GoogleSignIn onLogin={onLogin} />
+      </div>
+    );
+  }
+
+  if (!dataLoading && !onboarded) {
+    return (
+      <div className="wt-root">
+        <FontsAndStyles /><div className="grain" />
+        <Onboarding user={user} onUseDefault={chooseDefaultProgram} onBuildOwn={chooseBuildOwn} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="wt-root">
+      <FontsAndStyles />
+      <div className="grain" />
+
+      {dataLoading ? (
+        <div className="loader"><Dumbbell size={28} /><span>Loading your log…</span></div>
+      ) : active ? (
+        <ActiveSession
+          active={active}
+          setActive={setActive}
+          sessions={sessions}
+          onFinish={finishWorkout}
+          onCancel={cancelWorkout}
+        />
+      ) : (
+        <>
+          <header className="topbar">
+            <div className="brand">
+              <span className="brand-mark">▚</span>
+              <div>
+                <h1>IRONLOG</h1>
+                <p>4-Day Push / Pull · Failure Protocol</p>
+              </div>
+            </div>
+            <button className="profile-chip" onClick={() => setView("profile")} title="Profile & goals">
+              {user.picture
+                ? <img className="avatar avatar-img" src={user.picture} alt="" referrerPolicy="no-referrer" />
+                : <span className="avatar">{(user.name || "?").slice(0, 1).toUpperCase()}</span>}
+              <span className="profile-name">{user.name}</span>
+              <ChevronRight size={15} />
+            </button>
+          </header>
+
+          {syncError && <div className="sync-error" onClick={() => setSyncError("")}>{syncError}</div>}
+
+          <main className="content">
+            {view === "train" && <TrainView sessions={sessions} program={program} onStart={startWorkout} onEditProgram={() => setView("program")} />}
+            {view === "meal" && <MealView profile={profile} onGoProfile={() => setView("profile")} />}
+            {view === "calendar" && <CalendarView sessions={sessions} program={program} />}
+            {view === "history" && <HistoryView sessions={sessions} onDelete={deleteSession} onImport={importSessions} />}
+            {view === "progress" && <ProgressView sessions={sessions} />}
+            {view === "program" && <ProgramView program={program} onChange={updateProgram} onReset={resetProgram} />}
+            {view === "profile" && <ProfileView profile={profile} onSave={saveProfile} onBack={() => setView("train")} onLogout={logout} />}
+          </main>
+
+          <nav className="tabbar">
+            <TabBtn active={view === "train"} onClick={() => setView("train")} icon={<Dumbbell size={20} />} label="Train" />
+            <TabBtn active={view === "meal"} onClick={() => setView("meal")} icon={<UtensilsCrossed size={20} />} label="Meals" />
+            <TabBtn active={view === "program"} onClick={() => setView("program")} icon={<ListChecks size={20} />} label="Program" />
+            <TabBtn active={view === "calendar"} onClick={() => setView("calendar")} icon={<CalendarDays size={20} />} label="Calendar" />
+            <TabBtn active={view === "history"} onClick={() => setView("history")} icon={<History size={20} />} label="History" />
+            <TabBtn active={view === "progress"} onClick={() => setView("progress")} icon={<TrendingUp size={20} />} label="Progress" />
+          </nav>
+        </>
+      )}
+    </div>
+  );
+}
+
+function TabBtn({ active, onClick, icon, label }) {
+  return (
+    <button className={`tab ${active ? "tab-on" : ""}`} onClick={onClick}>
+      {icon}<span>{label}</span>
+    </button>
+  );
+}
+
+/* ================================================================== */
+/*  GOOGLE SIGN-IN  (GIS — accounts.google.com/gsi/client)             */
+/* ================================================================== */
+function GoogleSignIn({ onLogin }) {
+  const btnRef = useRef(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+
+  useEffect(() => {
+    if (!clientId) {
+      setErr("Missing VITE_GOOGLE_CLIENT_ID — add it to your .env (see README).");
+      return;
+    }
+
+    let cancelled = false;
+
+    const handleCredential = async (response) => {
+      setBusy(true);
+      setErr("");
+      try {
+        const user = await api.googleLogin(response.credential);
+        if (!cancelled) onLogin(user);
+      } catch {
+        if (!cancelled) { setErr("Sign-in failed. Please try again."); setBusy(false); }
+      }
+    };
+
+    // The GIS script loads async (see index.html); poll briefly until it's ready.
+    let tries = 0;
+    const init = () => {
+      if (cancelled) return;
+      const gid = window.google?.accounts?.id;
+      if (!gid) {
+        if (tries++ > 60) { setErr("Couldn't load Google sign-in. Check your connection."); return; }
+        setTimeout(init, 100);
+        return;
+      }
+      gid.initialize({
+        client_id: clientId,
+        callback: handleCredential,
+        use_fedcm_for_prompt: true, // FedCM is mandatory in 2026
+        auto_select: false,
+      });
+      if (btnRef.current) {
+        gid.renderButton(btnRef.current, {
+          type: "standard",
+          theme: "filled_black",
+          size: "large",
+          shape: "pill",
+          text: "continue_with",
+          logo_alignment: "left",
+          width: 280,
+        });
+      }
+      gid.prompt(); // also surface the One Tap / FedCM prompt
+    };
+    init();
+
+    return () => { cancelled = true; };
+  }, [clientId, onLogin]);
+
+  return (
+    <div className="login fade-in">
+      <div className="login-brand">
+        <span className="brand-mark big">▚</span>
+        <h1>IRONLOG</h1>
+        <p>Sign in to sync your training across devices</p>
+      </div>
+
+      <div className="login-form" style={{ alignItems: "center" }}>
+        <div ref={btnRef} className="gbtn-wrap" />
+        {busy && <div className="login-note" style={{ marginTop: 4 }}>Signing you in…</div>}
+        {err && <div className="login-err">{err}</div>}
+        <p className="login-note">
+          We use Google only to identify your account. Your workout history is stored on
+          the app's own server and synced to every device you sign in on.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  ONBOARDING  (new user picks a starting program)                   */
+/* ================================================================== */
+function Onboarding({ user, onUseDefault, onBuildOwn }) {
+  const [busy, setBusy] = useState(null); // "default" | "own" | null
+  const [err, setErr] = useState("");
+
+  const pick = async (which, fn) => {
+    setBusy(which); setErr("");
+    try { await fn(); }
+    catch { setErr("Something went wrong — please try again."); setBusy(null); }
+  };
+
+  const firstName = (user?.name || "").split(" ")[0];
+
+  return (
+    <div className="login fade-in">
+      <div className="login-brand">
+        <span className="brand-mark big">▚</span>
+        <h1>IRONLOG</h1>
+        <p>{firstName ? `Welcome, ${firstName}` : "Welcome"} — how do you want to start?</p>
+      </div>
+
+      <div className="onb-cards">
+        <button className="onb-card" disabled={!!busy} onClick={() => pick("default", onUseDefault)}>
+          <span className="onb-tag">Recommended</span>
+          <Dumbbell size={26} />
+          <h3>Use the default program</h3>
+          <p>Start with the ready-made 4-day Push / Pull split. You can tweak it anytime.</p>
+          <span className="onb-go">{busy === "default" ? "Setting up…" : "Use default →"}</span>
+        </button>
+
+        <button className="onb-card" disabled={!!busy} onClick={() => pick("own", onBuildOwn)}>
+          <ListChecks size={26} />
+          <h3>Build my own program</h3>
+          <p>Start from a blank day and add your own exercises, sets, and variations.</p>
+          <span className="onb-go">{busy === "own" ? "Creating…" : "Build my own →"}</span>
+        </button>
+      </div>
+
+      {err && <div className="login-err" style={{ marginTop: 14 }}>{err}</div>}
+      <p className="login-note">You can switch to the default or rebuild your program later from the Program tab.</p>
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  TRAIN VIEW                                                         */
+/* ================================================================== */
+function TrainView({ sessions, program, onStart, onEditProgram }) {
+  const lastByDay = {};
+  for (const s of sessions) {
+    if (!lastByDay[s.dayKey] || s.startedAt > lastByDay[s.dayKey]) lastByDay[s.dayKey] = s.startedAt;
+  }
+  const days = program || [];
+
+  if (!days.length) {
+    return (
+      <div className="fade-in">
+        <div className="empty">
+          <ListChecks size={40} />
+          <h3>No workout days yet</h3>
+          <p>Build your program — add days and exercises — then come back here to train.</p>
+          <button className="login-go" style={{ marginTop: 18, padding: "12px 20px" }} onClick={onEditProgram}>
+            <Pencil size={15} style={{ verticalAlign: "-2px", marginRight: 6 }} /> Edit program
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fade-in">
+      <div className="train-head">
+        <div className="section-label" style={{ margin: 0 }}>Choose today's session</div>
+        <button className="edit-prog-btn" onClick={onEditProgram}><Pencil size={13} /> Edit</button>
+      </div>
+      <div className="day-grid">
+        {days.map((day, i) => (
+          <button
+            key={day.key}
+            className="day-card"
+            style={{ animationDelay: `${i * 60}ms`, ["--day-accent"]: day.color || "var(--accent)" }}
+            onClick={() => onStart(day)}
+          >
+            <div className="day-card-top">
+              <span className="day-tag" style={{ background: day.color || "var(--accent)" }}>{day.tag || "DAY"}</span>
+              {lastByDay[day.key] && <span className="day-last">last {fmtShort(lastByDay[day.key])}</span>}
+            </div>
+            <h2 className="day-name">{day.name}</h2>
+            {day.focus && <p className="day-focus"><Flame size={13} /> {day.focus}</p>}
+            <div className="day-meta">{day.exercises.length} exercise{day.exercises.length === 1 ? "" : "s"}</div>
+            <div className="day-go"><Play size={15} fill="currentColor" /> Start</div>
+          </button>
+        ))}
+      </div>
+      <p className="footnote">
+        Your program and history sync to your account. Pick your equipment variation while logging each lift.
+      </p>
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  CALENDAR VIEW                                                      */
+/* ================================================================== */
+const dateKey = (ts) => { const d = new Date(ts); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; };
+const todayKey = () => dateKey(Date.now());
+
+function CalendarView({ sessions, program }) {
+  const now = new Date();
+  const [cursor, setCursor] = useState({ y: now.getFullYear(), m: now.getMonth() });
+  const [picked, setPicked] = useState(null);
+
+  // map dateKey -> array of sessions that day
+  const byDate = {};
+  for (const s of sessions) {
+    const k = dateKey(s.startedAt);
+    (byDate[k] = byDate[k] || []).push(s);
+  }
+
+  const firstDow = new Date(cursor.y, cursor.m, 1).getDay(); // 0=Sun
+  const daysInMonth = new Date(cursor.y, cursor.m + 1, 0).getDate();
+  const monthName = new Date(cursor.y, cursor.m, 1)
+    .toLocaleDateString(undefined, { month: "long", year: "numeric" });
+
+  const cells = [];
+  for (let i = 0; i < firstDow; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  const monthSessions = sessions.filter((s) => {
+    const d = new Date(s.startedAt);
+    return d.getFullYear() === cursor.y && d.getMonth() === cursor.m;
+  });
+
+  // current training streak (consecutive days with a workout, counting back from today)
+  let streak = 0;
+  const cur = new Date(); cur.setHours(0, 0, 0, 0);
+  if (!byDate[dateKey(cur.getTime())]) cur.setDate(cur.getDate() - 1); // allow "yesterday" start
+  while (byDate[dateKey(cur.getTime())]) { streak++; cur.setDate(cur.getDate() - 1); }
+
+  const go = (delta) => {
+    setPicked(null);
+    setCursor((c) => {
+      const m = c.m + delta;
+      return { y: c.y + Math.floor(m / 12), m: ((m % 12) + 12) % 12 };
+    });
+  };
+
+  const pickedSessions = picked ? byDate[picked] || [] : [];
+
+  return (
+    <div className="fade-in">
+      <div className="cal-stats">
+        <div className="stat"><span className="stat-n">{sessions.length}</span><span className="stat-l">total</span></div>
+        <div className="stat"><span className="stat-n">{monthSessions.length}</span><span className="stat-l">this month</span></div>
+        <div className="stat"><span className="stat-n">{streak}</span><span className="stat-l">day streak</span></div>
+      </div>
+
+      <div className="cal-card">
+        <div className="cal-nav">
+          <button className="icon-btn sm" onClick={() => go(-1)}><ChevronLeft size={18} /></button>
+          <h3>{monthName}</h3>
+          <button className="icon-btn sm" onClick={() => go(1)}><ChevronRight size={18} /></button>
+        </div>
+
+        <div className="cal-grid cal-dow">
+          {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => <span key={i}>{d}</span>)}
+        </div>
+
+        <div className="cal-grid">
+          {cells.map((d, i) => {
+            if (d === null) return <span key={i} className="cal-cell empty-cell" />;
+            const k = `${cursor.y}-${cursor.m}-${d}`;
+            const ss = byDate[k];
+            const isToday = k === todayKey();
+            return (
+              <button
+                key={i}
+                className={`cal-cell ${ss ? "has" : ""} ${isToday ? "today" : ""} ${picked === k ? "sel" : ""}`}
+                onClick={() => ss && setPicked(picked === k ? null : k)}
+              >
+                <span className="cal-num">{d}</span>
+                {ss && (
+                  <span className="cal-dots">
+                    {ss.slice(0, 3).map((s, j) => (
+                      <i key={j} style={{ background: colorForDayKey(s.dayKey, program) }} />
+                    ))}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="cal-legend">
+        {(program || []).map((day) => (
+          <span key={day.key} className="leg-item">
+            <i style={{ background: day.color || "var(--accent)" }} />{day.tag || "DAY"}
+          </span>
+        ))}
+      </div>
+
+      {picked && pickedSessions.length > 0 && (
+        <div className="cal-detail fade-in">
+          <div className="section-label" style={{ margin: "4px 4px 10px" }}>{fmtDate(pickedSessions[0].startedAt)}</div>
+          {pickedSessions.map((s) => {
+            const setCount = s.exercises.reduce((n, e) => n + e.sets.length, 0);
+            return (
+              <div className="cal-detail-row" key={s.id}>
+                <span className="day-tag sm" style={{ background: colorForDayKey(s.dayKey, program), color: "#101200" }}>{s.tag}</span>
+                <div>
+                  <strong>{s.dayName}</strong>
+                  <p>{s.exercises.length} exercises · {setCount} sets</p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {!sessions.length && (
+        <p className="footnote">Your training days will light up here once you finish a workout.</p>
+      )}
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  ACTIVE SESSION                                                     */
+/* ================================================================== */
+function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [restSignal, setRestSignal] = useState(0);
+
+  const update = (mut) => setActive((prev) => {
+    const copy = structuredClone(prev);
+    mut(copy);
+    return copy;
+  });
+
+  const setVariation = (exKey, v) => update((s) => {
+    const ex = s.exercises.find((e) => e.key === exKey); ex.variation = v;
+  });
+  const setField = (exKey, idx, field, val) => update((s) => {
+    const ex = s.exercises.find((e) => e.key === exKey); ex.sets[idx][field] = val;
+  });
+  const toggleDone = (exKey, idx) => {
+    const ex = active.exercises.find((e) => e.key === exKey);
+    const willBeDone = !ex.sets[idx].done;
+    update((s) => {
+      const e2 = s.exercises.find((e) => e.key === exKey);
+      const set = e2.sets[idx];
+      set.done = willBeDone;
+      if (willBeDone) {
+        set.doneAt = Date.now();
+        // rest taken = time since the previous completed set in this exercise
+        const prev = e2.sets[idx - 1];
+        if (prev && prev.doneAt) set.restBefore = Math.round((set.doneAt - prev.doneAt) / 1000);
+      } else {
+        delete set.doneAt; delete set.restBefore;
+      }
+    });
+    if (willBeDone) setRestSignal((n) => n + 1); // fires the auto rest timer
+  };
+  const addSet = (exKey) => update((s) => {
+    const ex = s.exercises.find((e) => e.key === exKey);
+    const last = ex.sets[ex.sets.length - 1];
+    ex.sets.push({ w: last ? last.w : "", r: "", done: false });
+  });
+  const removeSet = (exKey, idx) => update((s) => {
+    const ex = s.exercises.find((e) => e.key === exKey); ex.sets.splice(idx, 1);
+  });
+  const setDate = (val) => update((s) => { if (val) s.startedAt = localInputToTs(val); });
+
+  const totalSets = active.exercises.reduce((n, e) => n + e.sets.length, 0);
+  const doneSets = active.exercises.reduce((n, e) => n + e.sets.filter((x) => x.done).length, 0);
+  const pct = totalSets ? Math.round((doneSets / totalSets) * 100) : 0;
+
+  return (
+    <div className="session">
+      <header className="session-head">
+        <button className="icon-btn" onClick={() => setConfirmCancel(true)}><ChevronLeft size={22} /></button>
+        <div className="session-title">
+          <span className="day-tag sm">{active.tag}</span>
+          <div>
+            <h2>{active.dayName}</h2>
+            <p>{active.focus}</p>
+          </div>
+        </div>
+        <RestTimer autoSignal={restSignal} />
+      </header>
+
+      <div className="progress-wrap">
+        <div className="progress-bar"><div className="progress-fill" style={{ width: `${pct}%` }} /></div>
+        <span className="progress-txt">{doneSets}/{totalSets} sets</span>
+      </div>
+
+      <div className="date-row">
+        <label className="date-field">
+          <CalendarDays size={16} />
+          <span className="date-text">{fmtDateTime(active.startedAt)}</span>
+          <input
+            type="datetime-local"
+            className="date-input"
+            value={tsToLocalInput(active.startedAt)}
+            onChange={(e) => setDate(e.target.value)}
+          />
+        </label>
+      </div>
+
+      <main className="session-body">
+        {active.exercises.map((ex, ei) => {
+          const last = lastPerformance(sessions, ex.name, ex.variation, active.id);
+          const curBest = bestSetE1rm(ex.sets);
+          const histBest = historicalBestE1rm(sessions, ex.name, ex.variation, active.id);
+          const isPR = curBest > 0 && curBest > histBest;
+          return (
+            <div className="ex-card fade-in" key={ex.key} style={{ animationDelay: `${ei * 30}ms` }}>
+              <div className="ex-head">
+                <span className="ex-num">{String(ei + 1).padStart(2, "0")}</span>
+                <h3>{ex.name}</h3>
+                {isPR && <span className="pr-badge"><Trophy size={11} /> PR</span>}
+              </div>
+
+              {ex.variations.length > 0 && (
+                <div className="var-row">
+                  {ex.variations.map((v) => (
+                    <button
+                      key={v}
+                      className={`var-pill ${ex.variation === v ? "var-on" : ""}`}
+                      onClick={() => setVariation(ex.key, v)}
+                    >{v}</button>
+                  ))}
+                </div>
+              )}
+
+              {last && (
+                <div className="last-ref">
+                  <span className="last-label">Last · {fmtShort(last.date)}{last.variation && last.variation !== ex.variation ? ` (${last.variation})` : ""}</span>
+                  <span className="last-sets">
+                    {last.sets.map((st, i) => (
+                      <span key={i} className="last-chip">{st.w || "–"}<i>×</i>{st.r || "–"}</span>
+                    ))}
+                  </span>
+                </div>
+              )}
+
+              <div className="sets">
+                <div className="set-row set-header">
+                  <span>Set</span><span>Weight</span><span>Reps</span><span></span>
+                </div>
+                {ex.sets.map((st, si) => (
+                  <React.Fragment key={si}>
+                    {st.restBefore != null && (
+                      <div className="rest-log"><Timer size={11} /> rested {fmtRest(st.restBefore)}</div>
+                    )}
+                    <div className={`set-row ${st.done ? "set-done" : ""}`}>
+                      <span className="set-idx">{si + 1}</span>
+                      <input
+                        className="set-input" inputMode="decimal" placeholder="lbs"
+                        value={st.w} onChange={(e) => setField(ex.key, si, "w", e.target.value)}
+                      />
+                      <input
+                        className="set-input" inputMode="numeric" placeholder="reps"
+                        value={st.r} onChange={(e) => setField(ex.key, si, "r", e.target.value)}
+                      />
+                      <div className="set-actions">
+                        <button
+                          className={`check ${st.done ? "check-on" : ""}`}
+                          onClick={() => toggleDone(ex.key, si)}
+                          aria-label="mark set done"
+                        ><Check size={16} /></button>
+                        {ex.sets.length > 1 && (
+                          <button className="del-set" onClick={() => removeSet(ex.key, si)} aria-label="remove set">
+                            <X size={15} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </React.Fragment>
+                ))}
+              </div>
+
+              <button className="add-set" onClick={() => addSet(ex.key)}>
+                <Plus size={15} /> Add set
+              </button>
+            </div>
+          );
+        })}
+        <div style={{ height: 96 }} />
+      </main>
+
+      <div className="finish-bar">
+        <button className="finish-btn" onClick={onFinish}>
+          Finish & Save Workout
+        </button>
+      </div>
+
+      {confirmCancel && (
+        <div className="modal-bg" onClick={() => setConfirmCancel(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>Leave this workout?</h3>
+            <p>Your progress so far won't be saved to history.</p>
+            <div className="modal-btns">
+              <button className="btn-ghost" onClick={() => setConfirmCancel(false)}>Keep training</button>
+              <button className="btn-danger" onClick={onCancel}>Discard</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------- REST TIMER ----------------------- */
+function RestTimer({ autoSignal = 0 }) {
+  const [open, setOpen] = useState(false);
+  const [remaining, setRemaining] = useState(0);
+  const [running, setRunning] = useState(false);
+  const [auto, setAuto] = useState(true);
+  const [muted, setMuted] = useState(false);
+  const [duration, setDuration] = useState(90);
+  const ref = useRef(null);
+  const audioRef = useRef(null);
+  const initial = useRef(autoSignal);
+
+  const fireAlert = () => {
+    if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate([180, 90, 180]);
+    if (muted) return;
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      if (!audioRef.current) audioRef.current = new AC();
+      const ctx = audioRef.current;
+      if (ctx.state === "suspended") ctx.resume();
+      // two short beeps
+      [0, 0.22].forEach((t) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime + t);
+        gain.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + t + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + t + 0.16);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + t);
+        osc.stop(ctx.currentTime + t + 0.18);
+      });
+    } catch {}
+  };
+
+  // countdown tick
+  useEffect(() => {
+    if (running && remaining > 0) {
+      ref.current = setTimeout(() => setRemaining((r) => r - 1), 1000);
+    } else if (running && remaining === 0) {
+      fireAlert();          // rest is up — beep + buzz
+      setRunning(false);
+    }
+    return () => ref.current && clearTimeout(ref.current);
+  }, [running, remaining]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // auto-start whenever a set is checked done
+  useEffect(() => {
+    if (autoSignal === initial.current) return; // skip first mount
+    if (!auto) return;
+    setRemaining(duration);
+    setRunning(true);
+  }, [autoSignal]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const start = (s) => { setDuration(s); setRemaining(s); setRunning(true); setOpen(true); };
+  const mmss = `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}`;
+
+  return (
+    <div className="rest">
+      <button className={`icon-btn ${running ? "timer-on" : ""}`} onClick={() => setOpen((o) => !o)}>
+        {running ? <span className="timer-count">{mmss}</span> : <Timer size={20} />}
+      </button>
+      {open && (
+        <div className="rest-pop">
+          <div className="rest-big">{mmss}</div>
+          <div className="rest-presets">
+            {[60, 90, 120, 180].map((s) => (
+              <button
+                key={s}
+                className={duration === s ? "preset-on" : ""}
+                onClick={() => start(s)}
+              >{s < 120 ? `${s}s` : `${s / 60}m`}</button>
+            ))}
+          </div>
+          <button
+            className={`auto-toggle ${auto ? "auto-on" : ""}`}
+            onClick={() => setAuto((a) => !a)}
+          >
+            Auto-rest {auto ? "ON" : "OFF"} · {duration}s
+          </button>
+          <div className="rest-ctrl">
+            <button onClick={() => setRunning((r) => !r)} disabled={remaining === 0}>
+              {running ? <Pause size={15} /> : <Play size={15} />}
+            </button>
+            <button onClick={() => { setRemaining(0); setRunning(false); }}><RotateCcw size={15} /></button>
+            <button className={muted ? "" : "sound-on"} onClick={() => setMuted((m) => !m)} aria-label="toggle sound">
+              {muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  HISTORY VIEW                                                       */
+/* ================================================================== */
+function HistoryView({ sessions, onDelete, onImport }) {
+  const [openId, setOpenId] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const fileRef = useRef(null);
+  const sorted = [...sessions].sort((a, b) => b.startedAt - a.startedAt);
+
+  // chronological PR detection per name+variation (by best estimated 1RM)
+  const prFlags = {};
+  {
+    const best = {};
+    const chrono = [...sessions].sort((a, b) => a.startedAt - b.startedAt);
+    for (const s of chrono) {
+      s.exercises.forEach((ex, i) => {
+        const key = `${ex.name}|${ex.variation || ""}`;
+        const v = bestSetE1rm(ex.sets);
+        if (v > 0 && v > (best[key] || 0)) {
+          (prFlags[s.id] = prFlags[s.id] || new Set()).add(i);
+        }
+        if (v > (best[key] || 0)) best[key] = v;
+      });
+    }
+  }
+
+  const exportData = () => {
+    try {
+      const payload = { app: "IRONLOG", version: 1, exportedAt: Date.now(), sessions };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `ironlog-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch { setMsg("Export failed"); }
+  };
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      const arr = Array.isArray(data) ? data : data.sessions;
+      const added = await onImport(arr);
+      setMsg(`Restored — ${added} new workout${added === 1 ? "" : "s"} added`);
+    } catch { setMsg("Couldn't read that backup file"); }
+    e.target.value = "";
+    setTimeout(() => setMsg(null), 4000);
+  };
+
+  const BackupBar = (
+    <div className="backup-wrap">
+      <div className="backup">
+        <button className="backup-btn" onClick={exportData} disabled={!sessions.length}>
+          <Download size={15} /> Export backup
+        </button>
+        <button className="backup-btn" onClick={() => fileRef.current?.click()}>
+          <Upload size={15} /> Import
+        </button>
+        <input ref={fileRef} type="file" accept="application/json,.json" onChange={handleFile} style={{ display: "none" }} />
+      </div>
+      {msg && <div className="backup-msg">{msg}</div>}
+      <p className="footnote" style={{ margin: "10px 4px 0" }}>
+        Your data lives only on this device. Export a backup file to keep it safe or move it to another device.
+      </p>
+    </div>
+  );
+
+  if (!sorted.length) {
+    return (
+      <div className="fade-in">
+        <div className="empty">
+          <History size={40} />
+          <h3>No workouts yet</h3>
+          <p>Finish a session on the Train tab and it'll show up here.</p>
+        </div>
+        {BackupBar}
+      </div>
+    );
+  }
+
+  return (
+    <div className="fade-in">
+      <div className="section-label">{sorted.length} logged workout{sorted.length > 1 ? "s" : ""}</div>
+      {sorted.map((s) => {
+        const open = openId === s.id;
+        const setCount = s.exercises.reduce((n, e) => n + e.sets.length, 0);
+        const vol = s.exercises.reduce((t, e) =>
+          t + e.sets.reduce((x, st) => x + (parseFloat(st.w) || 0) * (parseFloat(st.r) || 0), 0), 0);
+        const prCount = prFlags[s.id]?.size || 0;
+        return (
+          <div className="hist-card" key={s.id}>
+            <button className="hist-head" onClick={() => setOpenId(open ? null : s.id)}>
+              <div className="hist-info">
+                <span className="day-tag sm">{s.tag}</span>
+                <div>
+                  <h3>{s.dayName} {prCount > 0 && <span className="pr-badge sm"><Trophy size={10} /> {prCount}</span>}</h3>
+                  <p>{fmtDate(s.startedAt)} · {setCount} sets · {Math.round(vol).toLocaleString()} lbs vol</p>
+                </div>
+              </div>
+              {open ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+            </button>
+            {open && (
+              <div className="hist-body">
+                {s.exercises.map((ex, i) => {
+                  const rests = ex.sets.map((st) => st.restBefore).filter((r) => r != null);
+                  const avgRest = rests.length ? Math.round(rests.reduce((a, b) => a + b, 0) / rests.length) : null;
+                  const top1rm = Math.round(bestSetE1rm(ex.sets));
+                  const isPR = prFlags[s.id]?.has(i);
+                  return (
+                    <div className="hist-ex" key={i}>
+                      <div className="hist-ex-name">
+                        {ex.name}{ex.variation ? <em> · {ex.variation}</em> : null}
+                        {isPR && <span className="pr-badge sm"><Trophy size={10} /> PR</span>}
+                      </div>
+                      <div className="hist-sets">
+                        {ex.sets.map((st, j) => (
+                          <span key={j} className="last-chip">{st.w || "–"}<i>×</i>{st.r || "–"}</span>
+                        ))}
+                      </div>
+                      <div className="hist-meta">
+                        {top1rm > 0 && <span>est 1RM {top1rm} lbs</span>}
+                        {avgRest != null && <span><Timer size={11} /> avg rest {fmtRest(avgRest)}</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+                <button className="btn-danger sm" onClick={() => onDelete(s.id)}>
+                  <Trash2 size={14} /> Delete
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {BackupBar}
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  PROGRESS VIEW                                                      */
+/* ================================================================== */
+function ProgressView({ sessions }) {
+  const names = Array.from(new Set(sessions.flatMap((s) => s.exercises.map((e) => e.name)))).sort();
+  const [sel, setSel] = useState(names[0] || null);
+  const [metric, setMetric] = useState("e1rm"); // e1rm | top
+  const [varFilter, setVarFilter] = useState("all");
+
+  if (!names.length) {
+    return (
+      <div className="empty fade-in">
+        <TrendingUp size={40} />
+        <h3>No data to chart yet</h3>
+        <p>Log a few workouts and your strength trend per lift will appear here.</p>
+      </div>
+    );
+  }
+  const current = names.includes(sel) ? sel : names[0];
+
+  // variations actually logged for this exercise
+  const variations = Array.from(new Set(
+    sessions.flatMap((s) => s.exercises.filter((e) => e.name === current && e.variation).map((e) => e.variation))
+  ));
+  const useVar = variations.includes(varFilter) ? varFilter : "all";
+
+  const data = sessions
+    .filter((s) => s.exercises.some((e) => e.name === current && (useVar === "all" || e.variation === useVar)))
+    .map((s) => {
+      const ex = s.exercises.find((e) => e.name === current && (useVar === "all" || e.variation === useVar));
+      const top = ex.sets.reduce((m, st) => Math.max(m, parseFloat(st.w) || 0), 0);
+      const oneRm = Math.round(bestSetE1rm(ex.sets));
+      return { date: s.startedAt, top, e1rm: oneRm };
+    })
+    .sort((a, b) => a.date - b.date)
+    .map((d) => ({ ...d, label: fmtShort(d.date) }));
+
+  const key = metric === "top" ? "top" : "e1rm";
+  const best = data.length ? Math.max(...data.map((d) => d[key])) : 0;
+  const latest = data.length ? data[data.length - 1][key] : 0;
+  const unit = metric === "top" ? "weight" : "est 1RM";
+
+  return (
+    <div className="fade-in">
+      <div className="metric-tabs">
+        <button className={metric === "e1rm" ? "mt-on" : ""} onClick={() => setMetric("e1rm")}>Est. 1RM</button>
+        <button className={metric === "top" ? "mt-on" : ""} onClick={() => setMetric("top")}>Top weight</button>
+      </div>
+
+      <select className="ex-select" value={current} onChange={(e) => { setSel(e.target.value); setVarFilter("all"); }}>
+        {names.map((n) => <option key={n} value={n}>{n}</option>)}
+      </select>
+
+      {variations.length > 1 && (
+        <div className="var-row" style={{ marginBottom: 14 }}>
+          <button className={`var-pill ${useVar === "all" ? "var-on" : ""}`} onClick={() => setVarFilter("all")}>All</button>
+          {variations.map((v) => (
+            <button key={v} className={`var-pill ${useVar === v ? "var-on" : ""}`} onClick={() => setVarFilter(v)}>{v}</button>
+          ))}
+        </div>
+      )}
+
+      <div className="stat-row">
+        <div className="stat"><span className="stat-n">{latest || "–"}</span><span className="stat-l">latest lbs</span></div>
+        <div className="stat"><span className="stat-n">{best || "–"}</span><span className="stat-l">best lbs</span></div>
+        <div className="stat"><span className="stat-n">{data.length}</span><span className="stat-l">sessions</span></div>
+      </div>
+
+      <div className="section-label" style={{ margin: "0 4px 10px" }}>{unit} per session</div>
+      <div className="chart-box">
+        {data.length < 2 ? (
+          <p className="chart-hint">Log this lift at least twice to see a trend line.</p>
+        ) : (
+          <Suspense fallback={<ChartFallback />}>
+            <TrendChart data={data} yKey={key} color="#d8ff36" height={240} format={(v) => [`${v} lbs`, unit]} />
+          </Suspense>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  NUTRITION — targets math + meal/profile screens                    */
+/* ================================================================== */
+const ACTIVITY = {
+  sedentary: { mult: 1.2, label: "Sedentary (little exercise)" },
+  light: { mult: 1.375, label: "Light (1–3 days/wk)" },
+  moderate: { mult: 1.55, label: "Moderate (3–5 days/wk)" },
+  very: { mult: 1.725, label: "Very active (6–7 days/wk)" },
+  athlete: { mult: 1.9, label: "Athlete (2x/day)" },
+};
+const GOALS = {
+  lose_weight: { factor: 0.75, proteinPerLb: 0.8, label: "Lose weight" },
+  lose_fat: { factor: 0.8, proteinPerLb: 1.0, label: "Lose fat" },
+  maintain: { factor: 1.0, proteinPerLb: 0.8, label: "Maintain" },
+  bulk: { factor: 1.12, proteinPerLb: 0.9, label: "Bulk" },
+};
+const MACROS = [
+  { key: "calories", label: "Calories", unit: "kcal", color: "#d8ff36" },
+  { key: "protein", label: "Protein", unit: "g", color: "#46d9ff" },
+  { key: "carbs", label: "Carbs", unit: "g", color: "#ffb13e" },
+  { key: "fat", label: "Fat", unit: "g", color: "#ff6fd0" },
+];
+
+// Mifflin–St Jeor BMR -> TDEE (activity) -> calories (goal) -> macro split.
+function computeTargets({ sex, age, heightIn, weightLbs, activity, goal }) {
+  const w = Number(weightLbs), h = Number(heightIn), a = Number(age);
+  if (!w || !h || !a) return null;
+  const kg = w / 2.2046226, cm = h * 2.54;
+  const bmr = 10 * kg + 6.25 * cm - 5 * a + (sex === "female" ? -161 : 5);
+  const tdee = bmr * (ACTIVITY[activity]?.mult || 1.55);
+  const g = GOALS[goal] || GOALS.maintain;
+  const calories = Math.round((tdee * g.factor) / 10) * 10;
+  const protein = Math.round(g.proteinPerLb * w);
+  const fat = Math.round((calories * 0.27) / 9);   // ~27% of calories from fat
+  const carbs = Math.max(0, Math.round((calories - protein * 4 - fat * 9) / 4));
+  return { calories, protein, carbs, fat };
+}
+
+const pad2 = (n) => String(n).padStart(2, "0");
+const localDayStr = (d = new Date()) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+function shiftDay(dayStr, delta) {
+  const [y, m, dd] = dayStr.split("-").map(Number);
+  return localDayStr(new Date(y, m - 1, dd + delta));
+}
+function dayLabel(dayStr) {
+  const today = localDayStr();
+  if (dayStr === today) return "Today";
+  if (dayStr === shiftDay(today, -1)) return "Yesterday";
+  if (dayStr === shiftDay(today, 1)) return "Tomorrow";
+  const [y, m, dd] = dayStr.split("-").map(Number);
+  return new Date(y, m - 1, dd).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+
+/* ----------------------------- MEAL VIEW -------------------------- */
+function MealView({ profile, onGoProfile }) {
+  const [day, setDay] = useState(localDayStr());
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const targets = profile?.targets || null;
+
+  useEffect(() => {
+    let on = true;
+    setLoading(true);
+    api.getMeals(day)
+      .then((r) => { if (on) { setEntries(Array.isArray(r) ? r : []); setLoading(false); } })
+      .catch(() => { if (on) { setEntries([]); setLoading(false); } });
+    return () => { on = false; };
+  }, [day]);
+
+  const totals = entries.reduce(
+    (a, m) => ({ calories: a.calories + m.calories, protein: a.protein + m.protein, carbs: a.carbs + m.carbs, fat: a.fat + m.fat }),
+    { calories: 0, protein: 0, carbs: 0, fat: 0 }
+  );
+
+  const addEntry = async (entry) => {
+    const tmp = { ...entry, id: `tmp-${Date.now()}` };
+    setEntries((p) => [...p, tmp]);
+    try {
+      const saved = await api.addMeal(entry);
+      setEntries((p) => p.map((e) => (e.id === tmp.id ? saved : e)));
+    } catch {
+      setEntries((p) => p.filter((e) => e.id !== tmp.id));
+    }
+  };
+  const delEntry = async (id) => {
+    const prev = entries;
+    setEntries((p) => p.filter((e) => e.id !== id));
+    try { await api.deleteMeal(id); } catch { setEntries(prev); }
+  };
+
+  return (
+    <div className="fade-in">
+      <div className="meal-datebar">
+        <button className="icon-btn sm" onClick={() => setDay((d) => shiftDay(d, -1))}><ChevronLeft size={18} /></button>
+        <div className="meal-date">
+          <strong>{dayLabel(day)}</strong>
+          {day !== localDayStr() && <button className="meal-today" onClick={() => setDay(localDayStr())}>jump to today</button>}
+        </div>
+        <button className="icon-btn sm" onClick={() => setDay((d) => shiftDay(d, 1))} disabled={day >= localDayStr()}><ChevronRight size={18} /></button>
+      </div>
+
+      {!targets && (
+        <button className="meal-cta" onClick={onGoProfile}>
+          <Target size={16} /> Set your body stats & goal to get daily macro targets →
+        </button>
+      )}
+
+      <div className="macro-grid">
+        {MACROS.map((mc) => (
+          <MacroStat key={mc.key} label={mc.label} unit={mc.unit} color={mc.color}
+            value={totals[mc.key]} target={targets?.[mc.key]} />
+        ))}
+      </div>
+
+      <div className="train-head">
+        <div className="section-label" style={{ margin: 0 }}>{day === localDayStr() ? "Today's food" : "Logged food"}</div>
+        <button className="edit-prog-btn" onClick={() => setAdding(true)}><Plus size={14} /> Add food</button>
+      </div>
+
+      {loading ? (
+        <p className="chart-hint">Loading…</p>
+      ) : entries.length === 0 ? (
+        <div className="empty" style={{ padding: "48px 30px" }}>
+          <UtensilsCrossed size={36} />
+          <h3>Nothing logged yet</h3>
+          <p>Tap “Add food” to search the database and log your macros.</p>
+        </div>
+      ) : (
+        <div className="meal-list">
+          {entries.map((m) => (
+            <div className="meal-row" key={m.id}>
+              <div className="meal-info">
+                <strong>{m.name}</strong>
+                <p>{[m.brand, m.amount].filter(Boolean).join(" · ") || "—"}</p>
+              </div>
+              <div className="meal-macros">
+                <span className="meal-kcal">{Math.round(m.calories)} kcal</span>
+                <span>P {Math.round(m.protein)} · C {Math.round(m.carbs)} · F {Math.round(m.fat)}</span>
+              </div>
+              <button className="del-set" onClick={() => delEntry(m.id)} aria-label="remove food"><X size={16} /></button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {adding && <FoodSearch day={day} onAdd={addEntry} onClose={() => setAdding(false)} />}
+    </div>
+  );
+}
+
+function MacroStat({ label, value, target, unit, color }) {
+  const pct = target ? Math.min(100, Math.round((value / target) * 100)) : 0;
+  const over = target && value > target;
+  return (
+    <div className="macro-stat">
+      <div className="macro-top">
+        <span className="macro-label">{label}</span>
+        <span className="macro-val" style={{ color }}>{Math.round(value)}{target ? <i> / {Math.round(target)}</i> : null}</span>
+      </div>
+      <div className="macro-bar">
+        <div className="macro-fill" style={{ width: `${pct}%`, background: over ? "var(--danger)" : color }} />
+      </div>
+      <span className="macro-unit">{unit}{target ? (over ? ` · ${Math.round(value - target)} over` : ` · ${Math.round(target - value)} left`) : ""}</span>
+    </div>
+  );
+}
+
+/* --------------------------- FOOD SEARCH -------------------------- */
+const isBarcode = (s) => /^\d{8,14}$/.test(s.trim());
+
+function FoodSearch({ day, onAdd, onClose }) {
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [sel, setSel] = useState(null);
+  const [unit, setUnit] = useState("gram");   // "serving" | "gram"
+  const [qty, setQty] = useState("100");       // count of servings, or grams
+  const [custom, setCustom] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [c, setC] = useState({ name: "", calories: "", protein: "", carbs: "", fat: "" });
+  const [recents, setRecents] = useState([]);
+  const [favorites, setFavorites] = useState([]);
+  const timer = useRef(null);
+  const barcodeQ = isBarcode(q);
+  const favKeys = new Set(favorites.map((f) => `${f.name}|${f.amount || ""}`));
+
+  // load recent + favorite foods for one-tap re-logging
+  useEffect(() => {
+    let on = true;
+    Promise.all([api.getRecentFoods().catch(() => []), api.getFavorites().catch(() => [])])
+      .then(([r, f]) => { if (on) { setRecents(Array.isArray(r) ? r : []); setFavorites(Array.isArray(f) ? f : []); } });
+    return () => { on = false; };
+  }, []);
+
+  useEffect(() => {
+    const term = q.trim();
+    if (term.length < 2) { setResults([]); setSearching(false); return; }
+    setSearching(true);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(async () => {
+      try {
+        if (isBarcode(term)) {
+          const f = await api.getFoodByBarcode(term);   // exact product by barcode
+          setResults(f ? [f] : []);
+        } else {
+          setResults(await api.searchFoods(term));       // search by name
+        }
+      } catch { setResults([]); }
+      setSearching(false);
+    }, isBarcode(term) ? 150 : 450);
+    return () => timer.current && clearTimeout(timer.current);
+  }, [q]);
+
+  // pick a food -> default to servings if the DB gave us a serving size
+  const pickFood = (f) => {
+    setSel(f);
+    if (f.servingG) { setUnit("serving"); setQty("1"); }
+    else { setUnit("gram"); setQty("100"); }
+  };
+  // a scanned+looked-up product jumps straight to the quantity screen
+  const onScanResult = (food) => { setScanning(false); setQ(""); pickFood(food); };
+
+  // effective grams from the chosen unit + quantity
+  const grams = sel
+    ? (unit === "serving" ? (Number(qty) || 0) * (sel.servingG || 0) : (Number(qty) || 0))
+    : 0;
+  const scaled = sel ? (() => {
+    const f = Math.max(0, grams) / 100;
+    return {
+      calories: sel.per100g.calories * f,
+      protein: (sel.per100g.protein || 0) * f,
+      carbs: (sel.per100g.carbs || 0) * f,
+      fat: (sel.per100g.fat || 0) * f,
+    };
+  })() : null;
+
+  const addSelected = () => {
+    const g = Math.max(1, Math.round(grams));
+    const n = Number(qty) || 0;
+    const amount = unit === "serving" ? `${n} serving${n === 1 ? "" : "s"} (${g} g)` : `${g} g`;
+    onAdd({ day, name: sel.name, brand: sel.brand || "", amount, ...scaled });
+    onClose();
+  };
+  const addCustom = () => {
+    if (!c.name.trim()) return;
+    onAdd({ day, name: c.name.trim(), brand: "", amount: "",
+      calories: +c.calories || 0, protein: +c.protein || 0, carbs: +c.carbs || 0, fat: +c.fat || 0 });
+    onClose();
+  };
+
+  // one-tap re-log a recent/favorite food onto the current day
+  const addQuick = (item) => {
+    onAdd({ day, name: item.name, brand: item.brand || "", amount: item.amount || "",
+      calories: item.calories, protein: item.protein, carbs: item.carbs, fat: item.fat });
+    onClose();
+  };
+  const favorite = async (item) => {
+    try { setFavorites(await api.addFavorite(item)); } catch { /* ignore */ }
+  };
+  const unfavorite = async (id) => {
+    setFavorites((prev) => prev.filter((f) => f.id !== id));
+    try { await api.deleteFavorite(id); } catch { /* ignore */ }
+  };
+
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="food-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="food-head">
+          <h3>{custom ? "Add custom food" : "Add food"}</h3>
+          <button className="icon-btn sm" onClick={onClose}><X size={18} /></button>
+        </div>
+
+        {!custom && (
+          <>
+            <div className="food-searchbar">
+              <div className="food-search">
+                {barcodeQ ? <ScanLine size={16} /> : <Search size={16} />}
+                <input autoFocus className="food-input" inputMode="search"
+                  placeholder="Search foods or enter a barcode #"
+                  value={q} onChange={(e) => { setQ(e.target.value); setSel(null); }} />
+              </div>
+              <button className="scan-btn" onClick={() => setScanning(true)} aria-label="scan barcode" title="Scan barcode">
+                <Camera size={18} />
+              </button>
+            </div>
+            {!sel && <p className="food-hint">{barcodeQ ? "Looking up barcode…" : "Type a name, paste a barcode number, or tap the camera to scan."}</p>}
+
+            {sel ? (
+              <div className="food-amount">
+                <div className="food-sel-name"><strong>{sel.name}</strong>{sel.brand ? <em> · {sel.brand}</em> : null}</div>
+                {sel.servingG ? (
+                  <div className="seg">
+                    <button className={unit === "serving" ? "seg-on" : ""} onClick={() => { setUnit("serving"); setQty("1"); }}>Servings</button>
+                    <button className={unit === "gram" ? "seg-on" : ""} onClick={() => { setUnit("gram"); setQty(String(Math.round(sel.servingG))); }}>Grams</button>
+                  </div>
+                ) : null}
+                <label className="field-label">
+                  {unit === "serving" ? `Servings (1 serving = ${Math.round(sel.servingG)} g)` : "Amount (grams)"}
+                </label>
+                <input className="login-input" inputMode="decimal" value={qty}
+                  onChange={(e) => setQty(e.target.value.replace(/[^\d.]/g, ""))} />
+                <div className="food-preview">
+                  <span style={{ color: "#d8ff36" }}>{Math.round(scaled.calories)} kcal</span>
+                  <span>P {Math.round(scaled.protein)}</span><span>C {Math.round(scaled.carbs)}</span><span>F {Math.round(scaled.fat)}</span>
+                  {unit === "serving" && grams > 0 && <span>= {Math.round(grams)} g</span>}
+                </div>
+                <div className="modal-btns">
+                  <button className="btn-ghost" onClick={() => setSel(null)}>← Back</button>
+                  <button className="login-go" style={{ flex: 1, margin: 0 }} onClick={addSelected}>Add to day</button>
+                </div>
+              </div>
+            ) : q.trim().length >= 2 ? (
+              <div className="food-results">
+                {searching && <p className="chart-hint" style={{ padding: 20 }}>Searching…</p>}
+                {!searching && results.length === 0 && (
+                  <p className="chart-hint" style={{ padding: 20 }}>
+                    {barcodeQ ? "No product found for that barcode. Try the name or add it manually." : "No matches. Try another term or add it manually."}
+                  </p>
+                )}
+                {results.map((f) => (
+                  <button className="food-result" key={f.id} onClick={() => pickFood(f)}>
+                    <div className="food-result-name">
+                      <strong>{f.name}</strong>
+                      {f.brand && <em>{f.brand}</em>}
+                    </div>
+                    <span className="food-result-kcal">{f.per100g.calories} kcal<i>/100g</i></span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="food-results">
+                {favorites.length === 0 && recents.length === 0 && (
+                  <p className="chart-hint" style={{ padding: 20 }}>Search, scan, or add a custom food. Your recent &amp; favorite foods will show here for one-tap logging.</p>
+                )}
+                {favorites.length > 0 && <div className="quick-label">★ Favorites</div>}
+                {favorites.map((f) => (
+                  <div className="quick-row" key={"fav" + f.id}>
+                    <button className="quick-add" onClick={() => addQuick(f)}>
+                      <div className="food-result-name"><strong>{f.name}</strong>{f.brand && <em>{f.brand}</em>}</div>
+                      <span className="quick-meta">{Math.round(f.calories)} kcal{f.amount ? ` · ${f.amount}` : ""}</span>
+                    </button>
+                    <button className="quick-star on" onClick={() => unfavorite(f.id)} aria-label="remove favorite"><Star size={16} fill="currentColor" /></button>
+                  </div>
+                ))}
+                {recents.length > 0 && <div className="quick-label">Recent</div>}
+                {recents.map((r, i) => {
+                  const faved = favKeys.has(`${r.name}|${r.amount || ""}`);
+                  return (
+                    <div className="quick-row" key={"rec" + i}>
+                      <button className="quick-add" onClick={() => addQuick(r)}>
+                        <div className="food-result-name"><strong>{r.name}</strong>{r.brand && <em>{r.brand}</em>}</div>
+                        <span className="quick-meta">{Math.round(r.calories)} kcal{r.amount ? ` · ${r.amount}` : ""}</span>
+                      </button>
+                      <button className={`quick-star ${faved ? "on" : ""}`} onClick={() => !faved && favorite(r)} aria-label="favorite">
+                        <Star size={16} fill={faved ? "currentColor" : "none"} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {!sel && (
+              <button className="food-manual" onClick={() => setCustom(true)}>Can’t find it? Add manually</button>
+            )}
+          </>
+        )}
+
+        {custom && (
+          <div className="food-amount">
+            <label className="field-label">Food name</label>
+            <input className="login-input" value={c.name} placeholder="e.g. Mom's chili"
+              onChange={(e) => setC({ ...c, name: e.target.value })} />
+            <div className="custom-macros">
+              {[["calories", "Calories"], ["protein", "Protein g"], ["carbs", "Carbs g"], ["fat", "Fat g"]].map(([k, lbl]) => (
+                <div key={k}>
+                  <label className="field-label">{lbl}</label>
+                  <input className="login-input" inputMode="decimal" value={c[k]}
+                    onChange={(e) => setC({ ...c, [k]: e.target.value.replace(/[^\d.]/g, "") })} />
+                </div>
+              ))}
+            </div>
+            <div className="modal-btns">
+              <button className="btn-ghost" onClick={() => setCustom(false)}>← Search instead</button>
+              <button className="login-go" style={{ flex: 1, margin: 0 }} onClick={addCustom}>Add to day</button>
+            </div>
+          </div>
+        )}
+
+        {scanning && <BarcodeScanner onResult={onScanResult} onClose={() => setScanning(false)} />}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------- BARCODE SCANNER ------------------------ */
+// Uses the browser's native BarcodeDetector (Chrome/Android/Edge). On iOS Safari
+// / Firefox (no support) or when the camera is blocked, it shows a clear message
+// and the user types/pastes the number instead (which hits the same lookup).
+function BarcodeScanner({ onResult, onClose }) {
+  const videoRef = useRef(null);
+  const lockRef = useRef(false);          // pause while a lookup is in flight / after success
+  const rejectedRef = useRef({});         // code -> last "not found" time (avoid re-spamming)
+  const [err, setErr] = useState("");
+  const [manual, setManual] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [found, setFound] = useState(null);
+  const [notice, setNotice] = useState("");
+  const [torchOn, setTorchOn] = useState(false);
+  const [torchSupported, setTorchSupported] = useState(false);
+
+  // A detected/typed code -> look it up; resolve to the product or keep scanning.
+  const handleCode = useCallback(async (raw) => {
+    const code = String(raw || "").replace(/\D/g, "");
+    if (code.length < 6 || lockRef.current) return;
+    if (rejectedRef.current[code] && Date.now() - rejectedRef.current[code] < 4000) return;
+    lockRef.current = true;
+    setBusy(true); setNotice("");
+    try {
+      const food = await api.getFoodByBarcode(code);
+      if (food) {
+        if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(90);
+        setFound(food);
+        setTimeout(() => onResult(food), 650); // brief confirmation, then to quantity
+        return;                                 // stay locked — we're done
+      }
+      rejectedRef.current[code] = Date.now();
+      setNotice(`No product found for ${code}. Keep scanning or type another number.`);
+    } catch {
+      setNotice("Lookup failed — check your connection and try again.");
+    }
+    setBusy(false);
+    lockRef.current = false;                     // resume scanning
+  }, [onResult]);
+
+  useEffect(() => {
+    let stopped = false, stream = null, timer = null, zxingControls = null;
+
+    const checkTorch = () => {
+      try {
+        const track = videoRef.current?.srcObject?.getVideoTracks?.()[0];
+        const caps = track?.getCapabilities?.();
+        if (caps && "torch" in caps) setTorchSupported(true);
+      } catch { /* not supported */ }
+    };
+
+    // Fast path: Chrome/Android/Edge native barcode detector.
+    async function runNative() {
+      const detector = new window.BarcodeDetector({
+        formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39"],
+      });
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      if (stopped) return;
+      const v = videoRef.current;
+      if (v) { v.srcObject = stream; await v.play().catch(() => {}); }
+      checkTorch();
+      const tick = async () => {
+        if (stopped) return;
+        try {
+          const codes = await detector.detect(videoRef.current);
+          const hit = codes.find((c) => c.rawValue && /\d{6,}/.test(c.rawValue));
+          if (hit) handleCode(hit.rawValue);     // keep looping; handleCode de-dupes
+        } catch { /* keep trying */ }
+        timer = setTimeout(tick, 350);
+      };
+      tick();
+    }
+
+    // Fallback: decode camera frames in JS (iOS Safari, Firefox), lazy-loaded.
+    async function runZxing() {
+      const [{ BrowserMultiFormatReader }, lib] = await Promise.all([
+        import("@zxing/browser"),
+        import("@zxing/library"),
+      ]);
+      if (stopped) return;
+      let hints;
+      try {
+        hints = new Map();
+        hints.set(lib.DecodeHintType.POSSIBLE_FORMATS, [
+          lib.BarcodeFormat.EAN_13, lib.BarcodeFormat.EAN_8, lib.BarcodeFormat.UPC_A,
+          lib.BarcodeFormat.UPC_E, lib.BarcodeFormat.CODE_128, lib.BarcodeFormat.CODE_39,
+        ]);
+        hints.set(lib.DecodeHintType.TRY_HARDER, true);
+      } catch { hints = undefined; }
+      const reader = new BrowserMultiFormatReader(hints, { delayBetweenScanAttempts: 250 });
+      zxingControls = await reader.decodeFromConstraints(
+        { video: { facingMode: "environment" } },
+        videoRef.current,
+        (result) => { if (result) handleCode(result.getText()); }
+      );
+      checkTorch();
+    }
+
+    (async () => {
+      try {
+        if (typeof window !== "undefined" && "BarcodeDetector" in window) await runNative();
+        else await runZxing();
+      } catch {
+        if (!stopped) setErr("Couldn't start the camera. Allow camera access for this site in your browser settings, or enter the barcode number below.");
+      }
+    })();
+
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      if (zxingControls) { try { zxingControls.stop(); } catch { /* noop */ } }
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+    };
+  }, [handleCode]);
+
+  const toggleTorch = async () => {
+    const track = videoRef.current?.srcObject?.getVideoTracks?.()[0];
+    if (!track) return;
+    try { await track.applyConstraints({ advanced: [{ torch: !torchOn }] }); setTorchOn((v) => !v); }
+    catch { /* torch unavailable */ }
+  };
+
+  return (
+    <div className="scan-overlay">
+      <div className="scan-head">
+        <span><ScanLine size={16} /> Scan a barcode</span>
+        <button className="icon-btn sm" onClick={onClose}><X size={18} /></button>
+      </div>
+
+      {err ? (
+        <p className="scan-err">{err}</p>
+      ) : (
+        <div className="scan-video-wrap">
+          <video ref={videoRef} className="scan-video" muted playsInline autoPlay />
+          <div className={`scan-reticle ${found ? "scan-reticle-ok" : busy ? "scan-reticle-busy" : ""}`} />
+          {found ? (
+            <div className="scan-found">
+              <Check size={34} />
+              <strong>{found.name}</strong>
+              <span>{found.per100g.calories} kcal / 100g</span>
+            </div>
+          ) : (
+            <p className="scan-tip">{busy ? "Looking up…" : "Point your camera at the barcode"}</p>
+          )}
+          {torchSupported && !found && (
+            <button className={`scan-torch ${torchOn ? "on" : ""}`} onClick={toggleTorch} aria-label="toggle flashlight">
+              <Flashlight size={18} />
+            </button>
+          )}
+        </div>
+      )}
+
+      {notice && <p className="scan-notice">{notice}</p>}
+
+      <div className="scan-manual">
+        <input className="login-input" inputMode="numeric" placeholder="…or type the barcode number"
+          value={manual} onChange={(e) => setManual(e.target.value.replace(/\D/g, ""))}
+          onKeyDown={(e) => e.key === "Enter" && manual.length >= 6 && handleCode(manual)} />
+        <button className="login-go" style={{ margin: 0 }} disabled={manual.length < 6 || busy} onClick={() => handleCode(manual)}>Look up</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------- PROFILE VIEW ------------------------ */
+function ProfileView({ profile, onSave, onBack, onLogout }) {
+  const init = profile || {};
+  const [p, setP] = useState({
+    sex: init.sex || "male",
+    age: init.age ?? "",
+    heightFt: init.heightIn != null ? Math.floor(init.heightIn / 12) : "",
+    heightIn: init.heightIn != null ? init.heightIn % 12 : "",
+    weightLbs: init.weightLbs ?? "",
+    activity: init.activity || "moderate",
+    goal: init.goal || "lose_fat",
+  });
+  const [override, setOverride] = useState(!!init.custom);
+  const [manual, setManual] = useState(init.targets || { calories: "", protein: "", carbs: "", fat: "" });
+  const [saved, setSaved] = useState(false);
+  const [weights, setWeights] = useState([]);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [busy, setBusy] = useState("");
+
+  // load the body-weight history for the trend chart
+  useEffect(() => {
+    let on = true;
+    api.getWeights().then((w) => { if (on) setWeights(Array.isArray(w) ? w : []); }).catch(() => {});
+    return () => { on = false; };
+  }, []);
+
+  const heightIn = (Number(p.heightFt) || 0) * 12 + (Number(p.heightIn) || 0);
+  const computed = computeTargets({ ...p, heightIn });
+  const targets = override ? manual : computed;
+
+  const set = (k, v) => { setP((o) => ({ ...o, [k]: v })); setSaved(false); };
+
+  const save = async () => {
+    const payload = {
+      sex: p.sex, age: Number(p.age) || null, heightIn: heightIn || null, weightLbs: Number(p.weightLbs) || null,
+      activity: p.activity, goal: p.goal, custom: override,
+      targets: targets && targets.calories ? {
+        calories: Math.round(Number(targets.calories)) || 0,
+        protein: Math.round(Number(targets.protein)) || 0,
+        carbs: Math.round(Number(targets.carbs)) || 0,
+        fat: Math.round(Number(targets.fat)) || 0,
+      } : null,
+    };
+    await onSave(payload);
+    // also record today's weight into the trend log
+    if (Number(p.weightLbs)) {
+      try { setWeights(await api.logWeight(localDayStr(), Number(p.weightLbs))); } catch { /* ignore */ }
+    }
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2500);
+  };
+
+  const logWeightToday = async () => {
+    const lbs = Number(p.weightLbs);
+    if (!lbs) return;
+    try { setWeights(await api.logWeight(localDayStr(), lbs)); } catch { /* ignore */ }
+  };
+
+  const exportMine = async () => {
+    setBusy("export");
+    try {
+      const data = await api.exportData();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `ironlog-data-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch { /* ignore */ }
+    setBusy("");
+  };
+  const deleteMine = async () => {
+    setBusy("delete");
+    try { await api.deleteAccount(); onLogout(); }
+    catch { setBusy(""); }
+  };
+
+  // chart data + summary
+  const wdata = weights.map((w) => {
+    const [y, m, dd] = w.day.split("-").map(Number);
+    return { label: fmtShort(new Date(y, m - 1, dd).getTime()), weight: w.weightLbs };
+  });
+  const wFirst = weights.length ? weights[0].weightLbs : null;
+  const wLast = weights.length ? weights[weights.length - 1].weightLbs : null;
+  const wDelta = wFirst != null ? Math.round((wLast - wFirst) * 10) / 10 : 0;
+
+  return (
+    <div className="fade-in">
+      <div className="train-head">
+        <button className="edit-prog-btn" onClick={onBack}><ChevronLeft size={14} /> Back</button>
+        <div className="section-label" style={{ margin: 0 }}>Profile & goals</div>
+        <span style={{ width: 60 }} />
+      </div>
+
+      <div className="prog-day">
+        <div className="section-label" style={{ margin: "0 0 10px" }}><Scale size={13} style={{ verticalAlign: -2, marginRight: 5 }} />Body stats</div>
+
+        <div className="seg">
+          {["male", "female"].map((s) => (
+            <button key={s} className={p.sex === s ? "seg-on" : ""} onClick={() => set("sex", s)}>{s === "male" ? "Male" : "Female"}</button>
+          ))}
+        </div>
+
+        <div className="prof-grid">
+          <div>
+            <label className="field-label">Age</label>
+            <input className="login-input" inputMode="numeric" value={p.age} onChange={(e) => set("age", e.target.value.replace(/[^\d]/g, ""))} />
+          </div>
+          <div>
+            <label className="field-label">Weight (lbs)</label>
+            <input className="login-input" inputMode="decimal" value={p.weightLbs} onChange={(e) => set("weightLbs", e.target.value.replace(/[^\d.]/g, ""))} />
+          </div>
+          <div>
+            <label className="field-label">Height (ft)</label>
+            <input className="login-input" inputMode="numeric" value={p.heightFt} onChange={(e) => set("heightFt", e.target.value.replace(/[^\d]/g, ""))} />
+          </div>
+          <div>
+            <label className="field-label">Height (in)</label>
+            <input className="login-input" inputMode="numeric" value={p.heightIn} onChange={(e) => set("heightIn", e.target.value.replace(/[^\d]/g, ""))} />
+          </div>
+        </div>
+
+        <label className="field-label" style={{ marginTop: 12, display: "block" }}>Activity level</label>
+        <select className="ex-select" value={p.activity} onChange={(e) => set("activity", e.target.value)} style={{ marginBottom: 0 }}>
+          {Object.entries(ACTIVITY).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+        </select>
+      </div>
+
+      <div className="prog-day">
+        <div className="section-label" style={{ margin: "0 0 10px" }}><Target size={13} style={{ verticalAlign: -2, marginRight: 5 }} />Goal</div>
+        <div className="goal-grid">
+          {Object.entries(GOALS).map(([k, v]) => (
+            <button key={k} className={`goal-pill ${p.goal === k ? "goal-on" : ""}`} onClick={() => set("goal", k)}>{v.label}</button>
+          ))}
+        </div>
+      </div>
+
+      <div className="prog-day">
+        <div className="prof-targets-head">
+          <div className="section-label" style={{ margin: 0 }}>Daily targets</div>
+          <button className={`pin-opt ${override ? "on" : ""}`} style={{ padding: "7px 10px", fontSize: 12 }} onClick={() => setOverride((v) => !v)}>
+            {override ? "Custom" : "Auto"}
+          </button>
+        </div>
+        {!targets ? (
+          <p className="footnote" style={{ margin: "6px 2px 0" }}>Fill in age, height and weight to calculate your targets.</p>
+        ) : override ? (
+          <div className="custom-macros">
+            {MACROS.map((mc) => (
+              <div key={mc.key}>
+                <label className="field-label">{mc.label}</label>
+                <input className="login-input" inputMode="numeric" value={manual[mc.key] ?? ""}
+                  onChange={(e) => { setManual({ ...manual, [mc.key]: e.target.value.replace(/[^\d]/g, "") }); setSaved(false); }} />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="macro-grid" style={{ marginTop: 4 }}>
+            {MACROS.map((mc) => (
+              <div className="macro-stat" key={mc.key}>
+                <div className="macro-top"><span className="macro-label">{mc.label}</span></div>
+                <span className="macro-val" style={{ color: mc.color, fontSize: 22 }}>{computed[mc.key]}</span>
+                <span className="macro-unit">{mc.unit}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="prog-day">
+        <div className="prof-targets-head">
+          <div className="section-label" style={{ margin: 0 }}><TrendingUp size={13} style={{ verticalAlign: -2, marginRight: 5 }} />Body-weight trend</div>
+          <button className="edit-prog-btn" onClick={logWeightToday} disabled={!Number(p.weightLbs)}>Log today</button>
+        </div>
+        {weights.length >= 2 ? (
+          <>
+            <div className="stat-row" style={{ margin: "4px 0 12px" }}>
+              <div className="stat"><span className="stat-n">{wLast}</span><span className="stat-l">current lbs</span></div>
+              <div className="stat"><span className="stat-n">{wDelta === 0 ? "0" : (wDelta < 0 ? `−${Math.abs(wDelta)}` : `+${wDelta}`)}</span><span className="stat-l">since start</span></div>
+              <div className="stat"><span className="stat-n">{weights.length}</span><span className="stat-l">entries</span></div>
+            </div>
+            <div className="chart-box">
+              <Suspense fallback={<ChartFallback />}>
+                <TrendChart data={wdata} yKey="weight" color="#46d9ff" height={200} format={(v) => [`${v} lbs`, "weight"]} />
+              </Suspense>
+            </div>
+          </>
+        ) : (
+          <p className="footnote" style={{ margin: "8px 2px 0" }}>
+            Tap <strong>Log today</strong> (or just save your profile) on a few different days and your weight trend will chart here.
+          </p>
+        )}
+      </div>
+
+      <button className="add-day-btn" onClick={save}>{saved ? "Saved ✓" : "Save profile"}</button>
+
+      <div className="prog-day" style={{ marginTop: 14 }}>
+        <div className="section-label" style={{ margin: "0 0 10px" }}>Data &amp; account</div>
+        <button className="backup-btn" style={{ width: "100%" }} onClick={exportMine} disabled={busy === "export"}>
+          <Download size={15} /> {busy === "export" ? "Preparing…" : "Export my data (JSON)"}
+        </button>
+        <button className="btn-danger" style={{ width: "100%", marginTop: 10 }} onClick={() => setConfirmDelete(true)}>
+          <Trash2 size={14} /> Delete account
+        </button>
+        <p className="footnote" style={{ margin: "10px 2px 0" }}>
+          Export downloads all your workouts, meals, program &amp; weight history. Deleting your
+          account erases everything permanently.
+        </p>
+      </div>
+
+      <button className="login-back" style={{ width: "100%", marginTop: 14 }} onClick={onLogout}><LogOut size={14} style={{ verticalAlign: -2, marginRight: 6 }} />Sign out</button>
+
+      {confirmDelete && (
+        <div className="modal-bg" onClick={() => setConfirmDelete(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>Delete your account?</h3>
+            <p>This permanently erases your account and <strong>all</strong> your data — workouts, meals, program, and weight history. This cannot be undone.</p>
+            <div className="modal-btns">
+              <button className="btn-ghost" onClick={() => setConfirmDelete(false)}>Cancel</button>
+              <button className="btn-danger" onClick={deleteMine} disabled={busy === "delete"}>{busy === "delete" ? "Deleting…" : "Delete forever"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  PROGRAM EDITOR                                                     */
+/* ================================================================== */
+function ProgramView({ program, onChange, onReset }) {
+  const days = program || [];
+  const [confirmReset, setConfirmReset] = useState(false);
+
+  // every edit clones the program and pushes it up (App debounces the save)
+  const mutate = (fn) => {
+    const copy = structuredClone(days);
+    fn(copy);
+    onChange(copy);
+  };
+
+  const addDay = () => mutate((d) => {
+    const color = DAY_PALETTE[d.length % DAY_PALETTE.length];
+    d.push({ key: uid(), name: "New Day", focus: "", tag: "DAY", color, exercises: [] });
+  });
+  const delDay = (i) => mutate((d) => d.splice(i, 1));
+  const moveDay = (i, dir) => mutate((d) => {
+    const j = i + dir;
+    if (j < 0 || j >= d.length) return;
+    [d[i], d[j]] = [d[j], d[i]];
+  });
+  const setDayField = (i, field, val) => mutate((d) => { d[i][field] = val; });
+
+  const addEx = (i) => mutate((d) => d[i].exercises.push({ key: uid(), name: "New Exercise", variations: [], sets: 3 }));
+  const delEx = (i, j) => mutate((d) => d[i].exercises.splice(j, 1));
+  const moveEx = (i, j, dir) => mutate((d) => {
+    const ex = d[i].exercises, k = j + dir;
+    if (k < 0 || k >= ex.length) return;
+    [ex[j], ex[k]] = [ex[k], ex[j]];
+  });
+  const setExField = (i, j, field, val) => mutate((d) => { d[i].exercises[j][field] = val; });
+
+  return (
+    <div className="fade-in">
+      <div className="train-head">
+        <div className="section-label" style={{ margin: 0 }}>Your program · {days.length} day{days.length === 1 ? "" : "s"}</div>
+        <button className="edit-prog-btn" onClick={() => setConfirmReset(true)}><RotateCcw size={13} /> Reset</button>
+      </div>
+
+      {days.map((day, i) => (
+        <div className="prog-day" key={day.key}>
+          <div className="prog-day-head">
+            <span className="color-dot" style={{ background: day.color || "var(--accent)" }} />
+            <input
+              className="prog-input prog-day-name"
+              value={day.name}
+              placeholder="Day name"
+              onChange={(e) => setDayField(i, "name", e.target.value)}
+            />
+            <div className="prog-move">
+              <button onClick={() => moveDay(i, -1)} disabled={i === 0} aria-label="move day up"><ChevronUp size={16} /></button>
+              <button onClick={() => moveDay(i, 1)} disabled={i === days.length - 1} aria-label="move day down"><ChevronDown size={16} /></button>
+              <button className="prog-del" onClick={() => delDay(i)} aria-label="delete day"><Trash2 size={15} /></button>
+            </div>
+          </div>
+
+          <div className="prog-day-meta">
+            <input
+              className="prog-input prog-tag"
+              value={day.tag || ""}
+              maxLength={5}
+              placeholder="TAG"
+              onChange={(e) => setDayField(i, "tag", e.target.value.toUpperCase())}
+            />
+            <input
+              className="prog-input"
+              value={day.focus || ""}
+              placeholder="Focus (e.g. Chest Bias)"
+              onChange={(e) => setDayField(i, "focus", e.target.value)}
+            />
+          </div>
+
+          <div className="prog-colors">
+            {DAY_PALETTE.map((c) => (
+              <button
+                key={c}
+                className={`swatch ${day.color === c ? "swatch-on" : ""}`}
+                style={{ background: c }}
+                onClick={() => setDayField(i, "color", c)}
+                aria-label="pick color"
+              />
+            ))}
+          </div>
+
+          {day.exercises.map((ex, j) => (
+            <ExerciseRow
+              key={ex.key}
+              ex={ex}
+              canUp={j > 0}
+              canDown={j < day.exercises.length - 1}
+              onField={(field, val) => setExField(i, j, field, val)}
+              onMove={(dir) => moveEx(i, j, dir)}
+              onDelete={() => delEx(i, j)}
+            />
+          ))}
+
+          <button className="add-set" onClick={() => addEx(i)}>
+            <Plus size={15} /> Add exercise
+          </button>
+        </div>
+      ))}
+
+      <button className="add-day-btn" onClick={addDay}>
+        <Plus size={16} /> Add day
+      </button>
+      <p className="footnote">
+        Changes save to your account automatically. Editing your program never changes
+        workouts you've already finished.
+      </p>
+
+      {confirmReset && (
+        <div className="modal-bg" onClick={() => setConfirmReset(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>Reset to default program?</h3>
+            <p>This replaces your current program with the original 4-day split. Your finished workout history is not affected.</p>
+            <div className="modal-btns">
+              <button className="btn-ghost" onClick={() => setConfirmReset(false)}>Cancel</button>
+              <button className="btn-danger" onClick={() => { onReset(); setConfirmReset(false); }}>Reset</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// One editable exercise row. Variations are kept as a local text string while
+// typing (so commas don't vanish) and committed to the array on each change.
+function ExerciseRow({ ex, canUp, canDown, onField, onMove, onDelete }) {
+  const [varStr, setVarStr] = useState((ex.variations || []).join(", "));
+  const sets = Math.max(1, Number(ex.sets) || 1);
+
+  const onVarChange = (v) => {
+    setVarStr(v);
+    onField("variations", v.split(",").map((s) => s.trim()).filter(Boolean));
+  };
+
+  return (
+    <div className="prog-ex">
+      <div className="prog-ex-top">
+        <input
+          className="prog-input"
+          value={ex.name}
+          placeholder="Exercise name"
+          onChange={(e) => onField("name", e.target.value)}
+        />
+        <div className="prog-move">
+          <button onClick={() => onMove(-1)} disabled={!canUp} aria-label="move up"><ChevronUp size={15} /></button>
+          <button onClick={() => onMove(1)} disabled={!canDown} aria-label="move down"><ChevronDown size={15} /></button>
+          <button className="prog-del" onClick={onDelete} aria-label="delete exercise"><X size={15} /></button>
+        </div>
+      </div>
+      <div className="prog-ex-bot">
+        <input
+          className="prog-input prog-var"
+          value={varStr}
+          placeholder="Variations, comma-separated (optional)"
+          onChange={(e) => onVarChange(e.target.value)}
+        />
+        <div className="sets-step">
+          <button onClick={() => onField("sets", Math.max(1, sets - 1))} aria-label="fewer sets">−</button>
+          <span>{sets} <i>set{sets === 1 ? "" : "s"}</i></span>
+          <button onClick={() => onField("sets", Math.min(10, sets + 1))} aria-label="more sets">+</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  STYLES + FONTS                                                     */
+/* ================================================================== */
+function FontsAndStyles() {
+  return (
+    <style>{`
+      @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Archivo:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+
+      * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+      .wt-root {
+        --bg:#0a0b0d; --surface:#15171b; --surface2:#1d2025; --line:#2a2e36;
+        --text:#f2f4f5; --muted:#8b9199; --accent:#d8ff36; --danger:#ff5a4d;
+        position:relative; min-height:100vh; background:
+          radial-gradient(900px 500px at 90% -10%, rgba(216,255,54,.06), transparent 60%),
+          radial-gradient(700px 500px at -10% 110%, rgba(216,255,54,.04), transparent 60%),
+          var(--bg);
+        color:var(--text); font-family:'Archivo',sans-serif;
+        max-width:560px; margin:0 auto; padding-bottom:env(safe-area-inset-bottom);
+        overflow-x:hidden;
+      }
+      .grain { pointer-events:none; position:fixed; inset:0; z-index:0; opacity:.035;
+        background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+      .wt-root > *:not(.grain){ position:relative; z-index:1; }
+
+      h1,h2,h3 { margin:0; font-family:'Oswald',sans-serif; letter-spacing:.02em; }
+      .loader { display:flex; flex-direction:column; align-items:center; justify-content:center;
+        min-height:100vh; gap:14px; color:var(--muted); }
+      .loader svg { color:var(--accent); animation:pulse 1.4s ease-in-out infinite; }
+      @keyframes pulse { 0%,100%{opacity:.4; transform:scale(.95)} 50%{opacity:1; transform:scale(1.05)} }
+
+      /* TOPBAR */
+      .topbar { padding:calc(26px + env(safe-area-inset-top)) 20px 14px; display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+      .brand { display:flex; align-items:center; gap:13px; }
+      .brand-mark { font-size:34px; color:var(--accent); line-height:1; transform:translateY(-2px); }
+      .brand-mark.big { font-size:54px; }
+      .brand h1 { font-size:30px; font-weight:700; line-height:1; }
+      .brand p { margin:3px 0 0; font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--muted); }
+
+      .profile-chip { display:flex; align-items:center; gap:8px; background:var(--surface2); border:1px solid var(--line);
+        color:var(--text); border-radius:99px; padding:6px 11px 6px 6px; cursor:pointer; flex-shrink:0; }
+      .profile-chip svg { color:var(--muted); }
+      .profile-name { font-family:'Oswald'; font-weight:600; font-size:14px; max-width:90px; overflow:hidden;
+        text-overflow:ellipsis; white-space:nowrap; }
+      .avatar { width:26px; height:26px; border-radius:99px; background:var(--accent); color:#101200;
+        display:flex; align-items:center; justify-content:center; font-family:'Oswald'; font-weight:700; font-size:14px; flex-shrink:0; }
+      .avatar.lg { width:42px; height:42px; font-size:20px; }
+      .avatar-img { object-fit:cover; }
+
+      .sync-error { margin:0 16px; padding:10px 13px; background:rgba(255,90,77,.12);
+        border:1px solid var(--danger); border-radius:10px; color:var(--danger); font-size:12.5px;
+        font-family:'Archivo'; cursor:pointer; }
+
+      /* LOGIN */
+      .login { min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center;
+        padding:calc(30px + env(safe-area-inset-top)) 24px calc(30px + env(safe-area-inset-bottom)); max-width:460px; margin:0 auto; }
+      .login-brand { text-align:center; margin-bottom:34px; }
+      .login-brand h1 { font-size:42px; font-weight:700; margin-top:6px; }
+      .login-brand p { margin:8px 0 0; font-size:13px; letter-spacing:.06em; color:var(--muted); }
+      .profile-list { width:100%; display:flex; flex-direction:column; gap:11px; }
+      .profile-row { display:flex; gap:9px; }
+      .profile-pick { flex:1; display:flex; align-items:center; gap:13px; background:var(--surface); border:1px solid var(--line);
+        border-radius:14px; padding:14px; cursor:pointer; color:var(--text); transition:border-color .15s, transform .12s; }
+      .profile-pick:active { transform:scale(.985); }
+      .profile-pick:hover { border-color:#3a4150; }
+      .profile-pick svg { color:var(--muted); margin-left:auto; }
+      .profile-pick-name { font-family:'Oswald'; font-weight:600; font-size:19px; }
+      .profile-del { width:48px; border:1px solid var(--line); background:var(--surface); border-radius:14px; color:#565b63;
+        cursor:pointer; display:flex; align-items:center; justify-content:center; }
+      .profile-del:active { color:var(--danger); border-color:var(--danger); }
+      .add-profile { display:flex; align-items:center; justify-content:center; gap:8px; background:none;
+        border:1px dashed var(--line); color:var(--muted); font-family:'Archivo'; font-weight:600; font-size:14px;
+        padding:14px; border-radius:14px; cursor:pointer; margin-top:4px; transition:all .15s; }
+      .add-profile:active { border-color:var(--accent); color:var(--accent); }
+
+      .login-form { width:100%; display:flex; flex-direction:column; gap:11px; }
+      .field-label { font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
+      .login-input { width:100%; background:var(--surface); border:1px solid var(--line); border-radius:12px; color:var(--text);
+        font-family:'Archivo'; font-weight:600; font-size:17px; padding:14px; outline:none; transition:border-color .15s; }
+      .login-input:focus { border-color:var(--accent); }
+      .login-input.center { text-align:center; letter-spacing:.4em; font-size:24px; }
+      .pin-opt { display:flex; align-items:center; gap:8px; background:var(--surface); border:1px solid var(--line);
+        color:var(--muted); font-family:'Archivo'; font-weight:600; font-size:13px; padding:12px 14px; border-radius:12px; cursor:pointer; }
+      .pin-opt.on { border-color:var(--accent); color:var(--accent); }
+      .pin-who { display:flex; align-items:center; gap:12px; justify-content:center; font-family:'Oswald'; font-weight:600;
+        font-size:20px; margin-bottom:6px; }
+      .login-err { color:var(--danger); font-size:13px; font-weight:600; text-align:center; }
+      .login-go { background:var(--accent); color:#101200; border:none; border-radius:13px; font-family:'Oswald';
+        font-weight:700; font-size:17px; letter-spacing:.03em; padding:15px; cursor:pointer; margin-top:4px;
+        box-shadow:0 8px 24px rgba(216,255,54,.16); }
+      .login-go:active { transform:scale(.98); }
+      .login-back { background:none; border:none; color:var(--muted); font-family:'Archivo'; font-size:13px; cursor:pointer; padding:6px; }
+      .login-note { font-size:11.5px; line-height:1.6; color:var(--muted); text-align:center; margin:8px 0 0; }
+      .gbtn-wrap { display:flex; justify-content:center; min-height:44px; margin:6px 0 2px; color-scheme:light; }
+
+      .content { padding:8px 16px 110px; }
+      .section-label { font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--muted); margin:14px 4px 14px; }
+
+      /* DAY CARDS */
+      .day-grid { display:grid; gap:13px; }
+      .day-card { text-align:left; background:linear-gradient(150deg, var(--surface2), var(--surface));
+        border:1px solid var(--line); border-radius:16px; padding:18px; cursor:pointer; color:var(--text);
+        position:relative; overflow:hidden; opacity:0; animation:rise .5s ease forwards;
+        transition:border-color .2s, transform .12s; }
+      .day-card:active { transform:scale(.985); }
+      .day-card:hover { border-color:#3a4150; }
+      .day-card::before { content:""; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--day-accent, var(--accent)); }
+      .day-card-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+      .day-tag { font-family:'Space Mono',monospace; font-size:11px; font-weight:700; letter-spacing:.06em;
+        background:var(--accent); color:#101200; padding:3px 8px; border-radius:6px; }
+      .day-tag.sm { font-size:10px; padding:2px 6px; }
+      .day-last { font-size:11px; color:var(--muted); font-family:'Space Mono',monospace; }
+      .day-name { font-size:22px; font-weight:600; }
+      .day-focus { display:flex; align-items:center; gap:6px; margin:5px 0 0; color:var(--accent); font-size:13px; font-weight:600; }
+      .day-focus svg { color:var(--accent); }
+      .day-meta { font-size:12px; color:var(--muted); margin-top:9px; }
+      .day-go { display:inline-flex; align-items:center; gap:7px; margin-top:14px; font-family:'Oswald';
+        font-weight:600; font-size:14px; letter-spacing:.04em; color:var(--accent);
+        border:1px solid var(--accent); padding:7px 14px; border-radius:9px; }
+      .footnote { margin:22px 6px 0; font-size:12px; line-height:1.6; color:var(--muted); }
+
+      /* TABBAR */
+      .tabbar { position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100%; max-width:560px;
+        display:flex; background:rgba(13,14,17,.86); backdrop-filter:blur(14px);
+        border-top:1px solid var(--line); padding:8px 8px calc(8px + env(safe-area-inset-bottom)); z-index:5; }
+      .tab { flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; background:none; border:none;
+        color:var(--muted); font-family:'Archivo'; font-size:11px; font-weight:600; padding:7px 0; cursor:pointer;
+        border-radius:11px; transition:color .15s, background .15s; }
+      .tab span { letter-spacing:.02em; }
+      .tab-on { color:var(--accent); background:rgba(216,255,54,.08); }
+
+      /* SESSION */
+      .session { min-height:100vh; display:flex; flex-direction:column; }
+      .session-head { display:flex; align-items:center; gap:10px; padding:calc(16px + env(safe-area-inset-top)) 14px 12px; border-bottom:1px solid var(--line); }
+      .icon-btn { background:var(--surface2); border:1px solid var(--line); color:var(--text); border-radius:11px;
+        width:42px; height:42px; display:flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; }
+      .icon-btn.timer-on { border-color:var(--accent); color:var(--accent); }
+      .timer-count { font-family:'Space Mono',monospace; font-size:13px; font-weight:700; }
+      .session-title { flex:1; display:flex; align-items:center; gap:10px; min-width:0; }
+      .session-title h2 { font-size:18px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .session-title p { margin:1px 0 0; font-size:12px; color:var(--accent); }
+
+      .progress-wrap { display:flex; align-items:center; gap:10px; padding:12px 18px; }
+      .progress-bar { flex:1; height:6px; background:var(--surface2); border-radius:99px; overflow:hidden; }
+      .progress-fill { height:100%; background:var(--accent); border-radius:99px; transition:width .35s ease; }
+      .progress-txt { font-family:'Space Mono',monospace; font-size:12px; color:var(--muted); }
+
+      .date-row { padding:0 18px 6px; }
+      .date-field { position:relative; display:flex; align-items:center; gap:9px; background:var(--surface2);
+        border:1px solid var(--line); border-radius:11px; padding:11px 13px; cursor:pointer; color:var(--accent);
+        transition:border-color .15s; }
+      .date-field:active { border-color:var(--accent); }
+      .date-text { flex:1; font-family:'Space Mono',monospace; font-size:13px; font-weight:700; color:var(--text); }
+      .date-input { position:absolute; inset:0; opacity:0; width:100%; height:100%; cursor:pointer;
+        font-size:16px; border:none; }
+
+      .session-body { flex:1; padding:6px 14px 0; }
+      .ex-card { background:var(--surface); border:1px solid var(--line); border-radius:15px; padding:15px; margin-bottom:13px; }
+      .ex-head { display:flex; align-items:baseline; gap:9px; }
+      .ex-num { font-family:'Space Mono',monospace; font-size:12px; color:var(--accent); font-weight:700; }
+      .ex-head h3 { font-size:17px; font-weight:600; }
+
+      .var-row { display:flex; flex-wrap:wrap; gap:7px; margin:11px 0 4px; }
+      .var-pill { background:var(--surface2); border:1px solid var(--line); color:var(--muted); font-family:'Archivo';
+        font-size:12px; font-weight:600; padding:6px 11px; border-radius:99px; cursor:pointer; transition:all .15s; }
+      .var-pill:active { transform:scale(.95); }
+      .var-on { background:var(--accent); color:#101200; border-color:var(--accent); }
+
+      .last-ref { margin:10px 0 2px; padding:9px 11px; background:var(--surface2); border-radius:10px;
+        display:flex; flex-direction:column; gap:6px; }
+      .last-label { font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+      .last-sets { display:flex; flex-wrap:wrap; gap:6px; }
+      .last-chip { font-family:'Space Mono',monospace; font-size:12px; background:#0e1013; border:1px solid var(--line);
+        padding:3px 8px; border-radius:7px; color:var(--text); }
+      .last-chip i { color:var(--muted); font-style:normal; margin:0 2px; }
+
+      .sets { margin-top:12px; }
+      .set-row { display:grid; grid-template-columns:40px 1fr 1fr 84px; align-items:center; gap:8px; margin-bottom:8px; }
+      .set-header { margin-bottom:6px; }
+      .set-header span { font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); text-align:center; }
+      .set-header span:first-child { text-align:left; padding-left:4px; }
+      .set-idx { font-family:'Space Mono',monospace; font-weight:700; color:var(--muted); text-align:center; }
+      .set-input { width:100%; background:var(--surface2); border:1px solid var(--line); border-radius:9px;
+        color:var(--text); font-family:'Space Mono',monospace; font-size:15px; font-weight:700; text-align:center;
+        padding:11px 4px; outline:none; transition:border-color .15s; }
+      .set-input:focus { border-color:var(--accent); }
+      .set-input::placeholder { color:#565b63; font-weight:400; }
+      .set-actions { display:flex; gap:6px; justify-content:flex-end; }
+      .check { width:38px; height:38px; border-radius:9px; border:1px solid var(--line); background:var(--surface2);
+        color:var(--muted); display:flex; align-items:center; justify-content:center; cursor:pointer; transition:all .15s; }
+      .check-on { background:var(--accent); border-color:var(--accent); color:#101200; }
+      .del-set { width:30px; height:38px; border-radius:9px; border:none; background:none; color:#565b63; cursor:pointer;
+        display:flex; align-items:center; justify-content:center; }
+      .del-set:active { color:var(--danger); }
+      .set-done .set-input { border-color:rgba(216,255,54,.4); }
+      .rest-log { display:flex; align-items:center; gap:5px; font-family:'Space Mono',monospace; font-size:10px;
+        letter-spacing:.04em; color:var(--muted); margin:-2px 0 8px 48px; }
+      .rest-log svg { color:var(--accent); }
+      .hist-rest { display:flex; align-items:center; gap:5px; font-family:'Space Mono',monospace; font-size:10px;
+        color:var(--muted); margin-top:8px; }
+      .hist-rest svg { color:var(--accent); }
+      .hist-meta { display:flex; flex-wrap:wrap; gap:14px; margin-top:9px; }
+      .hist-meta span { display:flex; align-items:center; gap:5px; font-family:'Space Mono',monospace; font-size:10px;
+        letter-spacing:.03em; color:var(--muted); }
+      .hist-meta svg { color:var(--accent); }
+
+      .pr-badge { display:inline-flex; align-items:center; gap:3px; vertical-align:middle; margin-left:7px;
+        font-family:'Space Mono',monospace; font-size:10px; font-weight:700; letter-spacing:.04em;
+        background:var(--accent); color:#101200; padding:2px 7px; border-radius:99px; }
+      .pr-badge.sm { font-size:9px; padding:1px 6px; margin-left:6px; }
+      .pr-badge svg { color:#101200; }
+
+      .sound-on { color:var(--accent) !important; border-color:var(--accent) !important; }
+
+      .backup-wrap { margin-top:22px; }
+      .backup { display:flex; gap:10px; }
+      .backup-btn { flex:1; display:flex; align-items:center; justify-content:center; gap:7px; background:var(--surface);
+        border:1px solid var(--line); color:var(--text); font-family:'Archivo'; font-weight:600; font-size:13px;
+        padding:13px; border-radius:12px; cursor:pointer; transition:border-color .15s; }
+      .backup-btn:active { border-color:var(--accent); color:var(--accent); }
+      .backup-btn:disabled { opacity:.4; cursor:not-allowed; }
+      .backup-msg { margin-top:10px; padding:10px 13px; background:rgba(216,255,54,.1); border:1px solid var(--accent);
+        border-radius:10px; color:var(--accent); font-size:12px; font-family:'Space Mono',monospace; text-align:center; }
+
+      .metric-tabs { display:flex; gap:6px; background:var(--surface2); border:1px solid var(--line); border-radius:12px;
+        padding:4px; margin-bottom:14px; }
+      .metric-tabs button { flex:1; background:none; border:none; color:var(--muted); font-family:'Oswald';
+        font-weight:600; font-size:14px; letter-spacing:.03em; padding:9px; border-radius:9px; cursor:pointer; transition:all .15s; }
+      .metric-tabs button.mt-on { background:var(--accent); color:#101200; }
+
+      .add-set { margin-top:6px; width:100%; background:none; border:1px dashed var(--line); color:var(--muted);
+        font-family:'Archivo'; font-weight:600; font-size:13px; padding:10px; border-radius:10px; cursor:pointer;
+        display:flex; align-items:center; justify-content:center; gap:6px; transition:all .15s; }
+      .add-set:active { border-color:var(--accent); color:var(--accent); }
+
+      .finish-bar { position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100%; max-width:560px;
+        padding:14px 16px calc(16px + env(safe-area-inset-bottom)); background:linear-gradient(transparent, var(--bg) 30%); z-index:4; }
+      .finish-btn { width:100%; background:var(--accent); color:#101200; border:none; border-radius:13px;
+        font-family:'Oswald'; font-weight:700; font-size:17px; letter-spacing:.03em; padding:16px; cursor:pointer;
+        box-shadow:0 8px 24px rgba(216,255,54,.18); transition:transform .12s; }
+      .finish-btn:active { transform:scale(.98); }
+
+      /* REST POPOVER */
+      .rest { position:relative; }
+      .rest-pop { position:absolute; right:0; top:50px; width:200px; background:var(--surface); border:1px solid var(--line);
+        border-radius:14px; padding:13px; z-index:20; box-shadow:0 16px 40px rgba(0,0,0,.5); }
+      .rest-big { font-family:'Space Mono',monospace; font-size:30px; font-weight:700; text-align:center; color:var(--accent); }
+      .rest-presets { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin:10px 0 8px; }
+      .rest-presets button { background:var(--surface2); border:1px solid var(--line); color:var(--text);
+        font-family:'Space Mono',monospace; font-size:12px; padding:7px 0; border-radius:8px; cursor:pointer; }
+      .rest-presets button:active { background:var(--accent); color:#101200; }
+      .rest-presets button.preset-on { background:var(--accent); color:#101200; border-color:var(--accent); }
+      .auto-toggle { width:100%; margin:8px 0; background:var(--surface2); border:1px solid var(--line);
+        color:var(--muted); font-family:'Space Mono',monospace; font-size:11px; font-weight:700; letter-spacing:.04em;
+        padding:8px; border-radius:8px; cursor:pointer; transition:all .15s; }
+      .auto-toggle.auto-on { background:rgba(216,255,54,.12); border-color:var(--accent); color:var(--accent); }
+      .rest-ctrl { display:flex; gap:6px; }
+      .rest-ctrl button { flex:1; background:var(--surface2); border:1px solid var(--line); color:var(--text);
+        padding:8px; border-radius:8px; display:flex; align-items:center; justify-content:center; cursor:pointer; }
+
+      /* MODAL */
+      .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,.6); backdrop-filter:blur(3px); z-index:50;
+        display:flex; align-items:center; justify-content:center; padding:24px; }
+      .modal { background:var(--surface); border:1px solid var(--line); border-radius:18px; padding:22px; max-width:340px; width:100%; }
+      .modal h3 { font-size:20px; font-weight:600; }
+      .modal p { margin:8px 0 18px; color:var(--muted); font-size:14px; line-height:1.5; }
+      .modal-btns { display:flex; gap:10px; }
+      .btn-ghost { flex:1; background:var(--surface2); border:1px solid var(--line); color:var(--text);
+        font-family:'Archivo'; font-weight:600; padding:12px; border-radius:11px; cursor:pointer; }
+      .btn-danger { flex:1; background:rgba(255,90,77,.12); border:1px solid var(--danger); color:var(--danger);
+        font-family:'Archivo'; font-weight:600; padding:12px; border-radius:11px; cursor:pointer;
+        display:flex; align-items:center; justify-content:center; gap:6px; }
+      .btn-danger.sm { flex:none; margin-top:12px; padding:9px 14px; font-size:13px; }
+
+      /* HISTORY */
+      .hist-card { background:var(--surface); border:1px solid var(--line); border-radius:14px; margin-bottom:11px; overflow:hidden; }
+      .hist-head { width:100%; display:flex; align-items:center; justify-content:space-between; gap:10px;
+        background:none; border:none; color:var(--text); padding:15px; cursor:pointer; }
+      .hist-info { display:flex; align-items:center; gap:11px; text-align:left; }
+      .hist-info h3 { font-size:16px; font-weight:600; }
+      .hist-info p { margin:2px 0 0; font-size:12px; color:var(--muted); font-family:'Space Mono',monospace; }
+      .hist-body { padding:4px 15px 16px; border-top:1px solid var(--line); }
+      .hist-ex { padding:11px 0; border-bottom:1px solid var(--line); }
+      .hist-ex:last-of-type { border-bottom:none; }
+      .hist-ex-name { font-size:14px; font-weight:600; margin-bottom:7px; }
+      .hist-ex-name em { color:var(--muted); font-style:normal; font-weight:400; }
+      .hist-sets { display:flex; flex-wrap:wrap; gap:6px; }
+
+      /* PROGRESS */
+      .ex-select { width:100%; background:var(--surface); border:1px solid var(--line); color:var(--text);
+        font-family:'Archivo'; font-weight:600; font-size:15px; padding:13px 14px; border-radius:12px; cursor:pointer; margin-bottom:14px; }
+      .stat-row { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:14px; }
+      .stat { background:var(--surface); border:1px solid var(--line); border-radius:13px; padding:14px; text-align:center; }
+      .stat-n { display:block; font-family:'Space Mono',monospace; font-size:26px; font-weight:700; color:var(--accent); }
+      .stat-l { display:block; font-size:11px; color:var(--muted); margin-top:3px; letter-spacing:.04em; }
+      .chart-box { background:var(--surface); border:1px solid var(--line); border-radius:15px; padding:14px 8px 8px; }
+      .chart-hint { color:var(--muted); font-size:13px; text-align:center; padding:50px 16px; }
+
+      /* CALENDAR */
+      .cal-stats { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:14px; }
+      .cal-card { background:var(--surface); border:1px solid var(--line); border-radius:16px; padding:14px; }
+      .cal-nav { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+      .cal-nav h3 { font-size:18px; font-weight:600; }
+      .icon-btn.sm { width:36px; height:36px; }
+      .cal-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:5px; }
+      .cal-dow { margin-bottom:6px; }
+      .cal-dow span { text-align:center; font-size:11px; font-weight:700; color:var(--muted); font-family:'Space Mono',monospace; }
+      .cal-cell { aspect-ratio:1; border:1px solid transparent; background:var(--surface2); border-radius:10px;
+        display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; cursor:default;
+        position:relative; padding:0; }
+      .cal-cell.empty-cell { background:none; }
+      .cal-num { font-family:'Space Mono',monospace; font-size:13px; color:var(--muted); }
+      .cal-cell.has { cursor:pointer; background:#0f1216; border-color:var(--line); }
+      .cal-cell.has .cal-num { color:var(--text); font-weight:700; }
+      .cal-cell.today { box-shadow:inset 0 0 0 1.5px var(--accent); }
+      .cal-cell.today .cal-num { color:var(--accent); }
+      .cal-cell.sel { border-color:var(--accent); background:rgba(216,255,54,.1); }
+      .cal-cell:active.has { transform:scale(.93); }
+      .cal-dots { display:flex; gap:3px; height:6px; align-items:center; }
+      .cal-dots i { width:6px; height:6px; border-radius:99px; display:block; }
+      .cal-legend { display:flex; flex-wrap:wrap; gap:14px; justify-content:center; margin:16px 0 4px; }
+      .leg-item { display:flex; align-items:center; gap:6px; font-size:11px; font-weight:700;
+        font-family:'Space Mono',monospace; color:var(--muted); }
+      .leg-item i { width:9px; height:9px; border-radius:99px; }
+      .cal-detail { margin-top:18px; }
+      .cal-detail-row { display:flex; align-items:center; gap:11px; background:var(--surface); border:1px solid var(--line);
+        border-radius:13px; padding:13px; margin-bottom:10px; }
+      .cal-detail-row strong { font-family:'Oswald'; font-weight:600; font-size:16px; }
+      .cal-detail-row p { margin:2px 0 0; font-size:12px; color:var(--muted); font-family:'Space Mono',monospace; }
+
+      /* EMPTY */
+      .empty { display:flex; flex-direction:column; align-items:center; text-align:center; padding:70px 30px; color:var(--muted); }
+      .empty svg { color:var(--line); margin-bottom:16px; }
+      .empty h3 { font-size:20px; color:var(--text); font-weight:600; }
+      .empty p { margin:8px 0 0; font-size:14px; line-height:1.6; max-width:280px; }
+
+      /* TABBAR: tighten for 6 tabs */
+      .tab { font-size:10px; padding:7px 2px; }
+      .tab svg { width:19px; height:19px; }
+
+      /* MEALS */
+      .meal-datebar { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:8px 2px 14px; }
+      .meal-date { text-align:center; display:flex; flex-direction:column; gap:2px; }
+      .meal-date strong { font-family:'Oswald'; font-weight:600; font-size:18px; }
+      .meal-today { background:none; border:none; color:var(--accent); font-family:'Space Mono',monospace; font-size:11px; cursor:pointer; }
+      .meal-cta { width:100%; display:flex; align-items:center; gap:8px; justify-content:center; background:rgba(216,255,54,.08);
+        border:1px solid var(--accent); color:var(--accent); font-family:'Archivo'; font-weight:600; font-size:12.5px;
+        padding:11px; border-radius:11px; cursor:pointer; margin-bottom:14px; }
+      .meal-cta svg { flex-shrink:0; }
+      .macro-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-bottom:6px; }
+      .macro-stat { background:var(--surface); border:1px solid var(--line); border-radius:13px; padding:12px 13px; }
+      .macro-top { display:flex; align-items:baseline; justify-content:space-between; }
+      .macro-label { font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); }
+      .macro-val { font-family:'Space Mono',monospace; font-size:17px; font-weight:700; }
+      .macro-val i { color:var(--muted); font-style:normal; font-size:12px; font-weight:400; }
+      .macro-bar { height:6px; background:var(--surface2); border-radius:99px; overflow:hidden; margin:9px 0 5px; }
+      .macro-fill { height:100%; border-radius:99px; transition:width .35s ease; }
+      .macro-unit { font-size:10px; color:var(--muted); font-family:'Space Mono',monospace; }
+      .meal-list { display:flex; flex-direction:column; gap:9px; }
+      .meal-row { display:flex; align-items:center; gap:10px; background:var(--surface); border:1px solid var(--line);
+        border-radius:13px; padding:12px 13px; }
+      .meal-info { flex:1; min-width:0; }
+      .meal-info strong { font-size:14px; font-weight:600; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .meal-info p { margin:2px 0 0; font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .meal-macros { text-align:right; flex-shrink:0; display:flex; flex-direction:column; gap:2px; }
+      .meal-macros .meal-kcal { font-family:'Space Mono',monospace; font-weight:700; font-size:13px; color:var(--accent); }
+      .meal-macros span:last-child { font-size:10px; color:var(--muted); font-family:'Space Mono',monospace; }
+
+      /* FOOD SEARCH MODAL */
+      .food-modal { position:relative; background:var(--surface); border:1px solid var(--line); border-radius:18px; padding:16px;
+        width:100%; max-width:420px; max-height:82vh; display:flex; flex-direction:column; }
+      .food-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+      .food-head h3 { font-size:18px; font-weight:600; }
+      .food-searchbar { display:flex; gap:8px; align-items:stretch; }
+      .food-search { flex:1; display:flex; align-items:center; gap:8px; background:var(--surface2); border:1px solid var(--line);
+        border-radius:11px; padding:0 12px; }
+      .scan-btn { width:48px; flex-shrink:0; background:var(--surface2); border:1px solid var(--line); border-radius:11px;
+        color:var(--accent); display:flex; align-items:center; justify-content:center; cursor:pointer; }
+      .scan-btn:active { background:var(--accent); color:#101200; }
+      .food-hint { margin:8px 2px 0; font-size:11px; color:var(--muted); line-height:1.5; }
+
+      /* BARCODE SCANNER OVERLAY — full screen so the camera view is large */
+      .scan-overlay { position:fixed; inset:0; z-index:60; background:var(--bg);
+        padding:calc(14px + env(safe-area-inset-top)) 14px calc(14px + env(safe-area-inset-bottom));
+        display:flex; flex-direction:column; gap:12px; }
+      .scan-head { display:flex; align-items:center; justify-content:space-between; }
+      .scan-head span { display:flex; align-items:center; gap:7px; font-family:'Oswald'; font-weight:600; font-size:17px; }
+      .scan-head svg { color:var(--accent); }
+      .scan-video-wrap { position:relative; flex:1; min-height:55vh; background:#000; border-radius:14px; overflow:hidden;
+        display:flex; align-items:center; justify-content:center; }
+      .scan-video { width:100%; height:100%; object-fit:cover; }
+      .scan-reticle { position:absolute; left:8%; right:8%; top:34%; height:30%; border:2px solid var(--accent);
+        border-radius:12px; box-shadow:0 0 0 100vmax rgba(0,0,0,.35); transition:border-color .2s; }
+      .scan-reticle-busy { border-color:#fff; animation:pulse 1s ease-in-out infinite; }
+      .scan-reticle-ok { border-color:#9cff6f; box-shadow:0 0 0 100vmax rgba(0,40,0,.45); }
+      .scan-tip { position:absolute; bottom:10px; left:0; right:0; text-align:center; font-size:12px; color:#fff;
+        text-shadow:0 1px 4px #000; }
+      .scan-found { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+        gap:6px; background:rgba(8,18,6,.78); color:#fff; padding:20px; text-align:center; }
+      .scan-found svg { color:#9cff6f; }
+      .scan-found strong { font-family:'Oswald'; font-weight:600; font-size:18px; }
+      .scan-found span { font-family:'Space Mono',monospace; font-size:12px; color:var(--accent); }
+      .scan-torch { position:absolute; top:10px; right:10px; width:40px; height:40px; border-radius:99px;
+        background:rgba(0,0,0,.5); border:1px solid rgba(255,255,255,.3); color:#fff; display:flex; align-items:center;
+        justify-content:center; cursor:pointer; }
+      .scan-torch.on { background:var(--accent); color:#101200; border-color:var(--accent); }
+      .scan-notice { background:var(--surface2); border:1px solid var(--line); color:var(--text); border-radius:10px;
+        padding:10px 12px; font-size:12.5px; line-height:1.5; }
+      .scan-err { background:rgba(255,90,77,.1); border:1px solid var(--danger); color:var(--danger); border-radius:10px;
+        padding:12px 13px; font-size:13px; line-height:1.5; }
+      .scan-manual { display:flex; gap:8px; align-items:stretch; }
+      .scan-manual .login-input { flex:1; }
+      .scan-manual .login-go { flex-shrink:0; padding:0 18px; }
+      .food-search svg { color:var(--muted); flex-shrink:0; }
+      .food-input { flex:1; background:none; border:none; outline:none; color:var(--text); font-family:'Archivo';
+        font-size:15px; padding:13px 0; }
+      .food-results { margin-top:10px; overflow-y:auto; display:flex; flex-direction:column; gap:7px; }
+      .food-result { display:flex; align-items:center; justify-content:space-between; gap:10px; text-align:left;
+        background:var(--surface2); border:1px solid var(--line); border-radius:11px; padding:11px 12px; cursor:pointer; color:var(--text); }
+      .food-result:active { border-color:var(--accent); }
+      .food-result-name { min-width:0; }
+      .food-result-name strong { font-size:13.5px; font-weight:600; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .food-result-name em { font-style:normal; font-size:11px; color:var(--muted); }
+      .food-result-kcal { flex-shrink:0; font-family:'Space Mono',monospace; font-size:12px; font-weight:700; color:var(--accent); }
+      .food-result-kcal i { color:var(--muted); font-style:normal; font-weight:400; }
+      .food-manual { margin-top:12px; width:100%; background:none; border:1px dashed var(--line); color:var(--muted);
+        font-family:'Archivo'; font-weight:600; font-size:13px; padding:11px; border-radius:11px; cursor:pointer; }
+      .food-amount { margin-top:12px; display:flex; flex-direction:column; gap:9px; overflow-y:auto; }
+      .food-sel-name { font-size:15px; } .food-sel-name em { font-style:normal; color:var(--muted); font-size:13px; }
+      .food-preview { display:flex; flex-wrap:wrap; gap:12px; padding:11px 13px; background:var(--surface2); border-radius:10px;
+        font-family:'Space Mono',monospace; font-size:13px; font-weight:700; }
+      .food-preview span:not(:first-child) { color:var(--muted); }
+      .custom-macros { display:grid; grid-template-columns:repeat(2,1fr); gap:9px; }
+
+      /* QUICK ADD (recent + favorites) */
+      .quick-label { font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); margin:12px 2px 7px; }
+      .quick-row { display:flex; align-items:stretch; gap:7px; margin-bottom:7px; }
+      .quick-add { flex:1; min-width:0; display:flex; align-items:center; justify-content:space-between; gap:10px; text-align:left;
+        background:var(--surface2); border:1px solid var(--line); border-radius:11px; padding:11px 12px; cursor:pointer; color:var(--text); }
+      .quick-add:active { border-color:var(--accent); }
+      .quick-meta { flex-shrink:0; font-family:'Space Mono',monospace; font-size:11px; font-weight:700; color:var(--accent); }
+      .quick-star { width:44px; flex-shrink:0; background:var(--surface2); border:1px solid var(--line); border-radius:11px;
+        color:#565b63; display:flex; align-items:center; justify-content:center; cursor:pointer; }
+      .quick-star.on { color:var(--accent); border-color:var(--accent); }
+
+      /* PROFILE */
+      .seg { display:flex; gap:6px; background:var(--surface2); border:1px solid var(--line); border-radius:11px; padding:4px; margin-bottom:11px; }
+      .seg button { flex:1; background:none; border:none; color:var(--muted); font-family:'Oswald'; font-weight:600; font-size:14px;
+        padding:9px; border-radius:8px; cursor:pointer; }
+      .seg button.seg-on { background:var(--accent); color:#101200; }
+      .prof-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:9px; }
+      .prof-grid .field-label { display:block; margin-bottom:4px; }
+      .goal-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; }
+      .goal-pill { background:var(--surface2); border:1px solid var(--line); color:var(--text); font-family:'Oswald';
+        font-weight:600; font-size:15px; padding:13px; border-radius:11px; cursor:pointer; transition:all .15s; }
+      .goal-pill.goal-on { background:var(--accent); color:#101200; border-color:var(--accent); }
+      .prof-targets-head { display:flex; align-items:center; justify-content:space-between; }
+
+      /* ONBOARDING */
+      .onb-cards { width:100%; display:flex; flex-direction:column; gap:13px; }
+      .onb-card { position:relative; text-align:left; background:linear-gradient(150deg, var(--surface2), var(--surface));
+        border:1px solid var(--line); border-radius:16px; padding:20px; cursor:pointer; color:var(--text);
+        transition:border-color .15s, transform .12s; }
+      .onb-card:active { transform:scale(.99); }
+      .onb-card:hover { border-color:#3a4150; }
+      .onb-card:disabled { opacity:.6; cursor:default; }
+      .onb-card svg { color:var(--accent); }
+      .onb-card h3 { font-size:19px; font-weight:600; margin:11px 0 0; }
+      .onb-card p { margin:6px 0 0; font-size:13px; line-height:1.55; color:var(--muted); }
+      .onb-go { display:inline-block; margin-top:14px; font-family:'Oswald'; font-weight:600; font-size:14px;
+        letter-spacing:.03em; color:var(--accent); }
+      .onb-tag { position:absolute; top:14px; right:14px; font-family:'Space Mono',monospace; font-size:10px; font-weight:700;
+        letter-spacing:.04em; background:var(--accent); color:#101200; padding:3px 8px; border-radius:6px; }
+
+      /* PROGRAM EDITOR */
+      .train-head { display:flex; align-items:center; justify-content:space-between; margin:14px 4px 14px; }
+      .edit-prog-btn { display:flex; align-items:center; gap:5px; background:var(--surface2); border:1px solid var(--line);
+        color:var(--muted); font-family:'Archivo'; font-weight:600; font-size:12px; padding:6px 11px; border-radius:99px; cursor:pointer; }
+      .edit-prog-btn:active { border-color:var(--accent); color:var(--accent); }
+      .prog-day { background:var(--surface); border:1px solid var(--line); border-radius:15px; padding:14px; margin-bottom:13px; }
+      .prog-day-head { display:flex; align-items:center; gap:9px; }
+      .color-dot { width:14px; height:14px; border-radius:99px; flex-shrink:0; }
+      .prog-input { flex:1; min-width:0; background:var(--surface2); border:1px solid var(--line); border-radius:9px;
+        color:var(--text); font-family:'Archivo'; font-weight:600; font-size:14px; padding:10px 11px; outline:none; transition:border-color .15s; }
+      .prog-input:focus { border-color:var(--accent); }
+      .prog-input::placeholder { color:#565b63; font-weight:400; }
+      .prog-day-name { font-family:'Oswald'; font-weight:600; font-size:16px; }
+      .prog-move { display:flex; align-items:center; gap:4px; flex-shrink:0; }
+      .prog-move button { width:32px; height:32px; border-radius:8px; border:1px solid var(--line); background:var(--surface2);
+        color:var(--muted); display:flex; align-items:center; justify-content:center; cursor:pointer; }
+      .prog-move button:disabled { opacity:.3; cursor:not-allowed; }
+      .prog-move .prog-del:active { color:var(--danger); border-color:var(--danger); }
+      .prog-day-meta { display:flex; gap:8px; margin-top:9px; }
+      .prog-tag { flex:none; width:74px; text-align:center; font-family:'Space Mono',monospace; font-weight:700; letter-spacing:.04em; }
+      .prog-colors { display:flex; flex-wrap:wrap; gap:7px; margin:11px 0 4px; }
+      .swatch { width:22px; height:22px; border-radius:7px; border:2px solid transparent; cursor:pointer; padding:0; }
+      .swatch-on { border-color:var(--text); }
+      .prog-ex { border-top:1px solid var(--line); padding:11px 0 4px; margin-top:8px; }
+      .prog-ex-top { display:flex; align-items:center; gap:8px; }
+      .prog-ex-bot { display:flex; align-items:center; gap:8px; margin-top:8px; }
+      .prog-var { font-size:12.5px; }
+      .sets-step { display:flex; align-items:center; gap:8px; flex-shrink:0; background:var(--surface2);
+        border:1px solid var(--line); border-radius:9px; padding:4px 6px; }
+      .sets-step button { width:28px; height:28px; border-radius:7px; border:none; background:var(--bg); color:var(--text);
+        font-size:18px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+      .sets-step span { font-family:'Space Mono',monospace; font-size:13px; font-weight:700; min-width:54px; text-align:center; }
+      .sets-step i { color:var(--muted); font-style:normal; font-weight:400; font-size:11px; }
+      .add-day-btn { width:100%; display:flex; align-items:center; justify-content:center; gap:8px; background:var(--accent);
+        color:#101200; border:none; border-radius:13px; font-family:'Oswald'; font-weight:700; font-size:15px; letter-spacing:.03em;
+        padding:14px; cursor:pointer; box-shadow:0 8px 24px rgba(216,255,54,.16); }
+      .add-day-btn:active { transform:scale(.99); }
+
+      .fade-in { animation:fade .4s ease; }
+      @keyframes fade { from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none} }
+      @keyframes rise { from{opacity:0; transform:translateY(14px)} to{opacity:1; transform:none} }
+    `}</style>
+  );
+}

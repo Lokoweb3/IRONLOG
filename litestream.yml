@@ -1,0 +1,16 @@
+# Litestream continuously replicates the SQLite database to object storage
+# (Fly Tigris / any S3-compatible bucket) for point-in-time backups & recovery.
+# Credentials + bucket come from env vars set by `fly storage create`.
+# Env vars are expanded by Litestream at runtime.
+dbs:
+  - path: ${DB_PATH}
+    replicas:
+      - type: s3
+        bucket: ${BUCKET_NAME}
+        path: ironlog
+        endpoint: ${AWS_ENDPOINT_URL_S3}
+        region: ${AWS_REGION}
+        force-path-style: true
+        # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are read from the environment
+        retention: 168h            # keep 7 days of history
+        snapshot-interval: 24h     # full snapshot daily; WAL streamed continuously

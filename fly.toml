@@ -1,0 +1,31 @@
+# Fly.io configuration. Set `app` to a globally-unique name — that name becomes
+# your URL: https://<app>.fly.dev  (which you then add to Google's Authorized
+# JavaScript origins). `fly launch` can also fill this in for you.
+app = "lokoto-ironlog"           # globally-unique app name -> https://lokoto-ironlog.fly.dev
+primary_region = "iad"           # US East (Ashburn)
+
+[build]
+  [build.args]
+    # PUBLIC client id, baked into the frontend bundle at build time.
+    VITE_GOOGLE_CLIENT_ID = "303978605310-3r6jelg4vvs86kc5utn3t88559j51ac5.apps.googleusercontent.com"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "8080"
+  # Backend verifies tokens against this (public id). SESSION_SECRET is set as a
+  # secret via `fly secrets set`, NOT here.
+  GOOGLE_CLIENT_ID = "303978605310-3r6jelg4vvs86kc5utn3t88559j51ac5.apps.googleusercontent.com"
+  # Put the SQLite file on the persistent volume mounted below.
+  DB_PATH = "/data/app.db"
+
+# Persistent volume so the SQLite database survives deploys/restarts.
+[mounts]
+  source = "ironlog_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"      # never sleep — writes must not hit a cold start
+  auto_start_machines = true
+  min_machines_running = 1

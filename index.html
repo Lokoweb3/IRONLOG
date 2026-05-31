@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1" />
+    <meta name="theme-color" content="#0a0b0d" />
+    <title>IRONLOG</title>
+
+    <!-- PWA: installable, full-screen, themed -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/svg+xml" href="/icon-192.png" />
+
+    <!-- iOS "Add to Home Screen" -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="IRONLOG" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- Google Identity Services (GIS) — the current "Sign in with Google" client.
+         This is the only Google auth script we load; no legacy platform.js/gapi. -->
+    <script src="https://accounts.google.com/gsi/client" async></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
