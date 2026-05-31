@@ -145,8 +145,33 @@ export const api = {
     const data = await request("POST", "/meals", entry);
     return data.meal;
   },
+  async updateMeal(id, fields) {
+    const data = await request("PUT", `/meals/${encodeURIComponent(id)}`, fields);
+    return data.meal;
+  },
   async deleteMeal(id) {
     await request("DELETE", `/meals/${encodeURIComponent(id)}`);
+  },
+  // add many entries (recipe log); returns the full updated day
+  async bulkAddMeals(day, items) {
+    return request("POST", "/meals/bulk", { day, items });
+  },
+  // copy a whole day's entries to another day; returns the target day's meals
+  async copyDay(from, to) {
+    const data = await request("POST", "/meals/copy", { from, to });
+    return data.meals;
+  },
+
+  /* ----- saved meals (recipes) ----- */
+  async getRecipes() {
+    return request("GET", "/meals/recipes");
+  },
+  async addRecipe(name, items) {
+    const data = await request("POST", "/meals/recipes", { name, items });
+    return data.recipes;
+  },
+  async deleteRecipe(id) {
+    await request("DELETE", `/meals/recipes/${encodeURIComponent(id)}`);
   },
 
   // In-app exercise form guide (instructions + demo images), or null.

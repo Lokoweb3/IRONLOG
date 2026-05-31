@@ -133,6 +133,39 @@ describe("meals + favorites", () => {
   });
 });
 
+describe("meal slots, edit, copy, recipes", () => {
+  test("slot stored; edit updates macros", async () => {
+    const c = cookieFor(newUser("ms").id);
+    const day = "2026-05-30";
+    const post = await request(app).post("/meals").set("Cookie", c)
+      .send({ day, slot: "breakfast", name: "Oats", grams: 50, amount: "50 g", calories: 190, protein: 6, carbs: 33, fat: 3 }).expect(201);
+    assert.equal(post.body.meal.slot, "breakfast");
+    const upd = await request(app).put(`/meals/${post.body.meal.id}`).set("Cookie", c)
+      .send({ amount: "100 g", grams: 100, calories: 380, protein: 13, carbs: 67, fat: 7 }).expect(200);
+    assert.equal(upd.body.meal.calories, 380);
+    assert.equal(upd.body.meal.slot, "breakfast"); // unchanged
+  });
+  test("copy a day's entries to another day", async () => {
+    const c = cookieFor(newUser("cp").id);
+    await request(app).post("/meals").set("Cookie", c).send({ day: "2026-05-01", slot: "lunch", name: "X", calories: 100 }).expect(201);
+    const r = await request(app).post("/meals/copy").set("Cookie", c).send({ from: "2026-05-01", to: "2026-05-02" }).expect(200);
+    assert.equal(r.body.copied, 1);
+    const tgt = (await request(app).get("/meals?date=2026-05-02").set("Cookie", c)).body;
+    assert.equal(tgt.length, 1);
+    assert.equal(tgt[0].slot, "lunch");
+  });
+  test("save a recipe and bulk-log it", async () => {
+    const c = cookieFor(newUser("rc").id);
+    const rec = await request(app).post("/meals/recipes").set("Cookie", c)
+      .send({ name: "My Breakfast", items: [{ name: "Eggs", calories: 155, protein: 13, carbs: 1, fat: 11 }, { name: "Oats", calories: 190, protein: 7, carbs: 33, fat: 3 }] }).expect(201);
+    assert.equal(rec.body.recipes[0].items.length, 2);
+    const bulk = await request(app).post("/meals/bulk").set("Cookie", c)
+      .send({ day: "2026-06-01", items: rec.body.recipes[0].items.map((it) => ({ ...it, slot: "breakfast" })) }).expect(201);
+    assert.equal(bulk.body.length, 2);
+    assert.equal(bulk.body[0].slot, "breakfast");
+  });
+});
+
 describe("account export + delete", () => {
   test("export returns bundle; delete cascades and kills session", async () => {
     const u = newUser("acc");

@@ -3,7 +3,8 @@ import {
   Dumbbell, History, TrendingUp, Plus, Check, X, Timer,
   ChevronLeft, Trash2, Flame, ChevronDown, ChevronRight, ChevronUp, Play, Pause, RotateCcw,
   CalendarDays, Volume2, VolumeX, Trophy, Download, Upload,
-  LogOut, ListChecks, Pencil, UtensilsCrossed, Search, Target, Scale, ScanLine, Camera, Flashlight, Star, PlayCircle
+  LogOut, ListChecks, Pencil, UtensilsCrossed, Search, Target, Scale, ScanLine, Camera, Flashlight, Star, PlayCircle,
+  Copy, Save, BookOpen
 } from "lucide-react";
 import { api } from "./api.js";
 
@@ -1458,11 +1459,25 @@ function dayLabel(dayStr) {
 }
 
 /* ----------------------------- MEAL VIEW -------------------------- */
+const MEAL_SLOTS = [
+  { key: "breakfast", label: "Breakfast" },
+  { key: "lunch", label: "Lunch" },
+  { key: "dinner", label: "Dinner" },
+  { key: "snacks", label: "Snacks" },
+];
+const sumMacros = (list) => list.reduce(
+  (a, m) => ({ calories: a.calories + m.calories, protein: a.protein + m.protein, carbs: a.carbs + m.carbs, fat: a.fat + m.fat }),
+  { calories: 0, protein: 0, carbs: 0, fat: 0 }
+);
+
 function MealView({ profile, onGoProfile }) {
   const [day, setDay] = useState(localDayStr());
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [adding, setAdding] = useState(false);
+  const [addSlot, setAddSlot] = useState(null);      // FoodSearch open for this slot
+  const [editing, setEditing] = useState(null);      // entry being edited
+  const [saveItems, setSaveItems] = useState(null);  // entries to name & save as a meal
+  const [copyBusy, setCopyBusy] = useState(false);
   const targets = profile?.targets || null;
 
   useEffect(() => {
@@ -1474,10 +1489,7 @@ function MealView({ profile, onGoProfile }) {
     return () => { on = false; };
   }, [day]);
 
-  const totals = entries.reduce(
-    (a, m) => ({ calories: a.calories + m.calories, protein: a.protein + m.protein, carbs: a.carbs + m.carbs, fat: a.fat + m.fat }),
-    { calories: 0, protein: 0, carbs: 0, fat: 0 }
-  );
+  const totals = sumMacros(entries);
 
   const addEntry = async (entry) => {
     const tmp = { ...entry, id: `tmp-${Date.now()}` };
@@ -1485,14 +1497,28 @@ function MealView({ profile, onGoProfile }) {
     try {
       const saved = await api.addMeal(entry);
       setEntries((p) => p.map((e) => (e.id === tmp.id ? saved : e)));
-    } catch {
-      setEntries((p) => p.filter((e) => e.id !== tmp.id));
-    }
+    } catch { setEntries((p) => p.filter((e) => e.id !== tmp.id)); }
+  };
+  const updateEntry = async (id, fields) => {
+    const prev = entries;
+    setEntries((p) => p.map((e) => (e.id === id ? { ...e, ...fields } : e)));
+    try { const saved = await api.updateMeal(id, fields); setEntries((p) => p.map((e) => (e.id === id ? saved : e))); }
+    catch { setEntries(prev); }
   };
   const delEntry = async (id) => {
     const prev = entries;
     setEntries((p) => p.filter((e) => e.id !== id));
     try { await api.deleteMeal(id); } catch { setEntries(prev); }
+  };
+  const logItems = async (items) => {
+    try { const fresh = await api.bulkAddMeals(day, items); setEntries(Array.isArray(fresh) ? fresh : entries); }
+    catch { /* ignore */ }
+  };
+  const copyPrevDay = async () => {
+    setCopyBusy(true);
+    try { const fresh = await api.copyDay(shiftDay(day, -1), day); setEntries(Array.isArray(fresh) ? fresh : entries); }
+    catch { /* ignore */ }
+    setCopyBusy(false);
   };
 
   return (
@@ -1519,38 +1545,148 @@ function MealView({ profile, onGoProfile }) {
         ))}
       </div>
 
-      <div className="train-head">
-        <div className="section-label" style={{ margin: 0 }}>{day === localDayStr() ? "Today's food" : "Logged food"}</div>
-        <button className="edit-prog-btn" onClick={() => setAdding(true)}><Plus size={14} /> Add food</button>
-      </div>
+      <button className="meal-copy" onClick={copyPrevDay} disabled={copyBusy}>
+        <Copy size={14} /> {copyBusy ? "Copying…" : "Copy yesterday's meals"}
+      </button>
 
       {loading ? (
-        <p className="chart-hint">Loading…</p>
-      ) : entries.length === 0 ? (
-        <div className="empty" style={{ padding: "48px 30px" }}>
-          <UtensilsCrossed size={36} />
-          <h3>Nothing logged yet</h3>
-          <p>Tap “Add food” to search the database and log your macros.</p>
-        </div>
+        <p className="chart-hint" style={{ padding: 24 }}>Loading…</p>
       ) : (
-        <div className="meal-list">
-          {entries.map((m) => (
-            <div className="meal-row" key={m.id}>
-              <div className="meal-info">
-                <strong>{m.name}</strong>
-                <p>{[m.brand, m.amount].filter(Boolean).join(" · ") || "—"}</p>
+        MEAL_SLOTS.map(({ key, label }) => {
+          const list = entries.filter((e) => (e.slot || "snacks") === key);
+          const st = sumMacros(list);
+          return (
+            <div className="slot-sec" key={key}>
+              <div className="slot-head">
+                <div className="slot-title">{label}{list.length > 0 && <span className="slot-sub">{Math.round(st.calories)} kcal · P{Math.round(st.protein)} C{Math.round(st.carbs)} F{Math.round(st.fat)}</span>}</div>
+                <div className="slot-actions">
+                  {list.length > 0 && <button className="slot-save" onClick={() => setSaveItems(list)} title="Save these as a meal"><Save size={15} /></button>}
+                  <button className="slot-add" onClick={() => setAddSlot(key)}><Plus size={14} /> Add</button>
+                </div>
               </div>
-              <div className="meal-macros">
-                <span className="meal-kcal">{Math.round(m.calories)} kcal</span>
-                <span>P {Math.round(m.protein)} · C {Math.round(m.carbs)} · F {Math.round(m.fat)}</span>
-              </div>
-              <button className="del-set" onClick={() => delEntry(m.id)} aria-label="remove food"><X size={16} /></button>
+              {list.map((m) => (
+                <div className="meal-row" key={m.id}>
+                  <button className="meal-info-btn" onClick={() => setEditing(m)}>
+                    <strong>{m.name}</strong>
+                    <p>{[m.brand, m.amount].filter(Boolean).join(" · ") || "tap to edit"}</p>
+                  </button>
+                  <div className="meal-macros">
+                    <span className="meal-kcal">{Math.round(m.calories)} kcal</span>
+                    <span>P {Math.round(m.protein)} · C {Math.round(m.carbs)} · F {Math.round(m.fat)}</span>
+                  </div>
+                  <button className="del-set" onClick={() => delEntry(m.id)} aria-label="remove food"><X size={16} /></button>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          );
+        })
       )}
 
-      {adding && <FoodSearch day={day} onAdd={addEntry} onClose={() => setAdding(false)} />}
+      {addSlot && (
+        <FoodSearch
+          day={day} slot={addSlot}
+          onAdd={addEntry}
+          onLogRecipe={(items) => logItems(items.map((it) => ({ ...it, slot: addSlot })))}
+          onClose={() => setAddSlot(null)}
+        />
+      )}
+      {editing && <EditEntry entry={editing} onSave={(fields) => { updateEntry(editing.id, fields); setEditing(null); }} onClose={() => setEditing(null)} />}
+      {saveItems && <SaveMeal items={saveItems} onClose={() => setSaveItems(null)} />}
+    </div>
+  );
+}
+
+/* ---- edit a logged entry (rescale by amount, or edit macros directly) ---- */
+function EditEntry({ entry, onSave, onClose }) {
+  const per100 = entry.base?.per100g || null;
+  const servingG = entry.base?.servingG || null;
+  const [unit, setUnit] = useState(servingG ? "serving" : "gram");
+  const [qty, setQty] = useState(() => {
+    if (!per100) return "";
+    if (servingG) return String(Math.round(((entry.grams || servingG) / servingG) * 100) / 100);
+    return String(entry.grams || 100);
+  });
+  const [c, setC] = useState({ calories: entry.calories, protein: entry.protein, carbs: entry.carbs, fat: entry.fat });
+
+  const grams = per100 ? (unit === "serving" ? (Number(qty) || 0) * (servingG || 0) : (Number(qty) || 0)) : null;
+  const scaled = per100 ? {
+    calories: per100.calories * grams / 100, protein: (per100.protein || 0) * grams / 100,
+    carbs: (per100.carbs || 0) * grams / 100, fat: (per100.fat || 0) * grams / 100,
+  } : null;
+
+  const save = () => {
+    if (per100) {
+      const g = Math.max(1, Math.round(grams));
+      const n = Number(qty) || 0;
+      onSave({ amount: unit === "serving" ? `${n} serving${n === 1 ? "" : "s"} (${g} g)` : `${g} g`, grams: g, ...scaled });
+    } else {
+      onSave({ amount: entry.amount || "", grams: entry.grams ?? null, calories: +c.calories || 0, protein: +c.protein || 0, carbs: +c.carbs || 0, fat: +c.fat || 0 });
+    }
+  };
+
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="food-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="food-head"><h3>Edit · {entry.name}</h3><button className="icon-btn sm" onClick={onClose}><X size={18} /></button></div>
+        <div className="food-amount">
+          {per100 ? (
+            <>
+              {servingG ? (
+                <div className="seg">
+                  <button className={unit === "serving" ? "seg-on" : ""} onClick={() => { setUnit("serving"); setQty("1"); }}>Servings</button>
+                  <button className={unit === "gram" ? "seg-on" : ""} onClick={() => { setUnit("gram"); setQty(String(Math.round(servingG))); }}>Grams</button>
+                </div>
+              ) : null}
+              <label className="field-label">{unit === "serving" ? `Servings (1 = ${Math.round(servingG)} g)` : "Amount (grams)"}</label>
+              <input className="login-input" inputMode="decimal" value={qty} onChange={(e) => setQty(e.target.value.replace(/[^\d.]/g, ""))} />
+              <div className="food-preview">
+                <span style={{ color: "#d8ff36" }}>{Math.round(scaled.calories)} kcal</span>
+                <span>P {Math.round(scaled.protein)}</span><span>C {Math.round(scaled.carbs)}</span><span>F {Math.round(scaled.fat)}</span>
+              </div>
+            </>
+          ) : (
+            <div className="custom-macros">
+              {[["calories", "Calories"], ["protein", "Protein g"], ["carbs", "Carbs g"], ["fat", "Fat g"]].map(([k, lbl]) => (
+                <div key={k}>
+                  <label className="field-label">{lbl}</label>
+                  <input className="login-input" inputMode="decimal" value={c[k]} onChange={(e) => setC({ ...c, [k]: e.target.value.replace(/[^\d.]/g, "") })} />
+                </div>
+              ))}
+            </div>
+          )}
+          <button className="login-go" style={{ margin: 0 }} onClick={save}>Save changes</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---- name + save a set of foods as a reusable meal (recipe) ---- */
+function SaveMeal({ items, onClose }) {
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const st = sumMacros(items);
+
+  const save = async () => {
+    if (!name.trim()) return;
+    setBusy(true);
+    try { await api.addRecipe(name.trim(), items); setDone(true); setTimeout(onClose, 900); }
+    catch { setBusy(false); }
+  };
+
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="food-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="food-head"><h3>Save as a meal</h3><button className="icon-btn sm" onClick={onClose}><X size={18} /></button></div>
+        <div className="food-amount">
+          <p className="help-note" style={{ margin: 0 }}>{items.length} item{items.length === 1 ? "" : "s"} · {Math.round(st.calories)} kcal · P{Math.round(st.protein)} C{Math.round(st.carbs)} F{Math.round(st.fat)}</p>
+          <label className="field-label">Meal name</label>
+          <input className="login-input" autoFocus value={name} placeholder="e.g. My breakfast" onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
+          <button className="login-go" style={{ margin: 0 }} disabled={busy || !name.trim()} onClick={save}>{done ? "Saved ✓" : busy ? "Saving…" : "Save meal"}</button>
+          <p className="help-note" style={{ margin: 0 }}>Find it under “Saved meals” when you tap Add — log the whole thing in one tap.</p>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1575,7 +1711,7 @@ function MacroStat({ label, value, target, unit, color }) {
 /* --------------------------- FOOD SEARCH -------------------------- */
 const isBarcode = (s) => /^\d{8,14}$/.test(s.trim());
 
-function FoodSearch({ day, onAdd, onClose }) {
+function FoodSearch({ day, slot, onAdd, onLogRecipe, onClose }) {
   const [q, setQ] = useState("");
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
@@ -1587,15 +1723,22 @@ function FoodSearch({ day, onAdd, onClose }) {
   const [c, setC] = useState({ name: "", calories: "", protein: "", carbs: "", fat: "" });
   const [recents, setRecents] = useState([]);
   const [favorites, setFavorites] = useState([]);
+  const [recipes, setRecipes] = useState([]);
   const timer = useRef(null);
   const barcodeQ = isBarcode(q);
   const favKeys = new Set(favorites.map((f) => `${f.name}|${f.amount || ""}`));
+  const slotLabel = (MEAL_SLOTS.find((s) => s.key === slot) || {}).label || "";
 
-  // load recent + favorite foods for one-tap re-logging
+  // load recent foods, favorites + saved meals for one-tap logging
   useEffect(() => {
     let on = true;
-    Promise.all([api.getRecentFoods().catch(() => []), api.getFavorites().catch(() => [])])
-      .then(([r, f]) => { if (on) { setRecents(Array.isArray(r) ? r : []); setFavorites(Array.isArray(f) ? f : []); } });
+    Promise.all([
+      api.getRecentFoods().catch(() => []),
+      api.getFavorites().catch(() => []),
+      api.getRecipes().catch(() => []),
+    ]).then(([r, f, rec]) => {
+      if (on) { setRecents(Array.isArray(r) ? r : []); setFavorites(Array.isArray(f) ? f : []); setRecipes(Array.isArray(rec) ? rec : []); }
+    });
     return () => { on = false; };
   }, []);
 
@@ -1645,19 +1788,20 @@ function FoodSearch({ day, onAdd, onClose }) {
     const g = Math.max(1, Math.round(grams));
     const n = Number(qty) || 0;
     const amount = unit === "serving" ? `${n} serving${n === 1 ? "" : "s"} (${g} g)` : `${g} g`;
-    onAdd({ day, name: sel.name, brand: sel.brand || "", amount, ...scaled });
+    onAdd({ day, slot, name: sel.name, brand: sel.brand || "", amount, grams: g, base: { per100g: sel.per100g, servingG: sel.servingG || null }, ...scaled });
     onClose();
   };
   const addCustom = () => {
     if (!c.name.trim()) return;
-    onAdd({ day, name: c.name.trim(), brand: "", amount: "",
+    onAdd({ day, slot, name: c.name.trim(), brand: "", amount: "", grams: null, base: null,
       calories: +c.calories || 0, protein: +c.protein || 0, carbs: +c.carbs || 0, fat: +c.fat || 0 });
     onClose();
   };
 
-  // one-tap re-log a recent/favorite food onto the current day
+  // one-tap re-log a recent/favorite food into this slot
   const addQuick = (item) => {
-    onAdd({ day, name: item.name, brand: item.brand || "", amount: item.amount || "",
+    onAdd({ day, slot, name: item.name, brand: item.brand || "", amount: item.amount || "",
+      grams: item.grams ?? null, base: item.base ?? null,
       calories: item.calories, protein: item.protein, carbs: item.carbs, fat: item.fat });
     onClose();
   };
@@ -1668,12 +1812,17 @@ function FoodSearch({ day, onAdd, onClose }) {
     setFavorites((prev) => prev.filter((f) => f.id !== id));
     try { await api.deleteFavorite(id); } catch { /* ignore */ }
   };
+  const logRecipe = (recipe) => { onLogRecipe(recipe.items); onClose(); };
+  const removeRecipe = async (id) => {
+    setRecipes((prev) => prev.filter((r) => r.id !== id));
+    try { await api.deleteRecipe(id); } catch { /* ignore */ }
+  };
 
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="food-modal" onClick={(e) => e.stopPropagation()}>
         <div className="food-head">
-          <h3>{custom ? "Add custom food" : "Add food"}</h3>
+          <h3>{custom ? "Add custom food" : `Add to ${slotLabel || "day"}`}</h3>
           <button className="icon-btn sm" onClick={onClose}><X size={18} /></button>
         </div>
 
@@ -1736,9 +1885,22 @@ function FoodSearch({ day, onAdd, onClose }) {
               </div>
             ) : (
               <div className="food-results">
-                {favorites.length === 0 && recents.length === 0 && (
-                  <p className="chart-hint" style={{ padding: 20 }}>Search, scan, or add a custom food. Your recent &amp; favorite foods will show here for one-tap logging.</p>
+                {favorites.length === 0 && recents.length === 0 && recipes.length === 0 && (
+                  <p className="chart-hint" style={{ padding: 20 }}>Search, scan, or add a custom food. Your saved meals, recent &amp; favorite foods will show here for one-tap logging.</p>
                 )}
+                {recipes.length > 0 && <div className="quick-label"><BookOpen size={11} style={{ verticalAlign: -1, marginRight: 4 }} />Saved meals</div>}
+                {recipes.map((rec) => {
+                  const st = sumMacros(rec.items);
+                  return (
+                    <div className="quick-row" key={"rec-meal" + rec.id}>
+                      <button className="quick-add" onClick={() => logRecipe(rec)}>
+                        <div className="food-result-name"><strong>{rec.name}</strong><em>{rec.items.length} item{rec.items.length === 1 ? "" : "s"}</em></div>
+                        <span className="quick-meta">{Math.round(st.calories)} kcal</span>
+                      </button>
+                      <button className="quick-star" onClick={() => removeRecipe(rec.id)} aria-label="delete saved meal"><X size={16} /></button>
+                    </div>
+                  );
+                })}
                 {favorites.length > 0 && <div className="quick-label">★ Favorites</div>}
                 {favorites.map((f) => (
                   <div className="quick-row" key={"fav" + f.id}>
@@ -2763,9 +2925,30 @@ function FontsAndStyles() {
       .macro-bar { height:6px; background:var(--surface2); border-radius:99px; overflow:hidden; margin:9px 0 5px; }
       .macro-fill { height:100%; border-radius:99px; transition:width .35s ease; }
       .macro-unit { font-size:10px; color:var(--muted); font-family:'Space Mono',monospace; }
+      .meal-copy { width:100%; display:flex; align-items:center; justify-content:center; gap:7px; background:var(--surface2);
+        border:1px solid var(--line); color:var(--muted); font-family:'Archivo'; font-weight:600; font-size:12.5px;
+        padding:10px; border-radius:11px; cursor:pointer; margin:2px 0 14px; }
+      .meal-copy:active { border-color:var(--accent); color:var(--accent); }
+      .meal-copy svg { color:var(--accent); }
+
+      /* MEAL SLOTS */
+      .slot-sec { margin-bottom:14px; }
+      .slot-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:0 2px 8px; }
+      .slot-title { font-family:'Oswald'; font-weight:600; font-size:16px; display:flex; align-items:baseline; gap:8px; min-width:0; }
+      .slot-sub { font-family:'Space Mono',monospace; font-size:10px; font-weight:700; color:var(--muted); white-space:nowrap; }
+      .slot-actions { display:flex; align-items:center; gap:7px; flex-shrink:0; }
+      .slot-save { width:34px; height:30px; border-radius:8px; border:1px solid var(--line); background:var(--surface2);
+        color:var(--muted); display:flex; align-items:center; justify-content:center; cursor:pointer; }
+      .slot-save:active { color:var(--accent); border-color:var(--accent); }
+      .slot-add { display:flex; align-items:center; gap:5px; background:var(--surface2); border:1px solid var(--line);
+        color:var(--accent); font-family:'Archivo'; font-weight:600; font-size:12px; padding:6px 11px; border-radius:99px; cursor:pointer; }
+      .slot-add:active { background:var(--accent); color:#101200; }
       .meal-list { display:flex; flex-direction:column; gap:9px; }
       .meal-row { display:flex; align-items:center; gap:10px; background:var(--surface); border:1px solid var(--line);
-        border-radius:13px; padding:12px 13px; }
+        border-radius:13px; padding:12px 13px; margin-bottom:7px; }
+      .meal-info-btn { flex:1; min-width:0; text-align:left; background:none; border:none; color:var(--text); cursor:pointer; padding:0; }
+      .meal-info-btn strong { font-size:14px; font-weight:600; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .meal-info-btn p { margin:2px 0 0; font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
       .meal-info { flex:1; min-width:0; }
       .meal-info strong { font-size:14px; font-weight:600; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
       .meal-info p { margin:2px 0 0; font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }

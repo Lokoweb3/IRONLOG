@@ -99,7 +99,21 @@ db.exec(`
     created_at INTEGER NOT NULL,
     UNIQUE (user_id, day)
   );
+
+  CREATE TABLE IF NOT EXISTS recipes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name       TEXT    NOT NULL,
+    items      TEXT    NOT NULL,           -- JSON array of food entries
+    created_at INTEGER NOT NULL
+  );
 `);
+
+// --- lightweight migrations: add columns to existing meals tables ---
+const mealCols = db.prepare("PRAGMA table_info(meals)").all().map((c) => c.name);
+if (!mealCols.includes("slot")) db.exec("ALTER TABLE meals ADD COLUMN slot TEXT NOT NULL DEFAULT 'snacks'");
+if (!mealCols.includes("grams")) db.exec("ALTER TABLE meals ADD COLUMN grams REAL");
+if (!mealCols.includes("base")) db.exec("ALTER TABLE meals ADD COLUMN base TEXT"); // JSON { per100g, servingG }
 
 /* ----------------------------- mapping helpers --------------------------- */
 
@@ -308,26 +322,31 @@ export function saveProfile(userId, data) {
 
 /* --------------------------------- meals --------------------------------- */
 
+const SLOTS = new Set(["breakfast", "lunch", "dinner", "snacks"]);
+const slotOf = (s) => (SLOTS.has(s) ? s : "snacks");
+const mnum = (v) => Math.max(0, Math.round((Number(v) || 0) * 10) / 10);
+
 const _listMeals = db.prepare(
   "SELECT * FROM meals WHERE user_id = ? AND day = ? ORDER BY created_at ASC, id ASC"
 );
+const _getMeal = db.prepare("SELECT * FROM meals WHERE id = ? AND user_id = ?");
 const _insertMeal = db.prepare(`
-  INSERT INTO meals (user_id, day, name, brand, amount, calories, protein, carbs, fat, created_at)
-  VALUES (@user_id, @day, @name, @brand, @amount, @calories, @protein, @carbs, @fat, @created_at)
+  INSERT INTO meals (user_id, day, slot, name, brand, amount, grams, base, calories, protein, carbs, fat, created_at)
+  VALUES (@user_id, @day, @slot, @name, @brand, @amount, @grams, @base, @calories, @protein, @carbs, @fat, @created_at)
+`);
+const _updateMeal = db.prepare(`
+  UPDATE meals SET amount = @amount, grams = @grams,
+    calories = @calories, protein = @protein, carbs = @carbs, fat = @fat
+  WHERE id = @id AND user_id = @user_id
 `);
 const _deleteMeal = db.prepare("DELETE FROM meals WHERE id = ? AND user_id = ?");
 
 function rowToMeal(r) {
   return {
-    id: r.id,
-    day: r.day,
-    name: r.name,
-    brand: r.brand,
-    amount: r.amount,
-    calories: r.calories,
-    protein: r.protein,
-    carbs: r.carbs,
-    fat: r.fat,
+    id: r.id, day: r.day, slot: r.slot || "snacks",
+    name: r.name, brand: r.brand, amount: r.amount,
+    grams: r.grams, base: r.base ? JSON.parse(r.base) : null,
+    calories: r.calories, protein: r.protein, carbs: r.carbs, fat: r.fat,
   };
 }
 
@@ -336,29 +355,52 @@ export function listMeals(userId, day) {
 }
 
 export function addMeal(userId, m) {
-  const num = (v) => Math.max(0, Math.round((Number(v) || 0) * 10) / 10);
   const info = _insertMeal.run({
     user_id: userId,
     day: String(m.day),
+    slot: slotOf(m.slot),
     name: String(m.name || "Food").slice(0, 120),
     brand: m.brand ? String(m.brand).slice(0, 80) : null,
-    amount: m.amount ? String(m.amount).slice(0, 40) : null,
-    calories: num(m.calories),
-    protein: num(m.protein),
-    carbs: num(m.carbs),
-    fat: num(m.fat),
+    amount: m.amount ? String(m.amount).slice(0, 60) : null,
+    grams: m.grams != null ? Number(m.grams) || null : null,
+    base: m.base ? JSON.stringify(m.base) : null,
+    calories: mnum(m.calories), protein: mnum(m.protein), carbs: mnum(m.carbs), fat: mnum(m.fat),
     created_at: Date.now(),
   });
-  return rowToMeal(db.prepare("SELECT * FROM meals WHERE id = ?").get(info.lastInsertRowid));
+  return rowToMeal(_getMeal.get(info.lastInsertRowid, userId));
+}
+
+// Add many entries in one transaction (used by recipes + copy-day).
+export const bulkAddMeals = db.transaction((userId, items) => {
+  for (const m of items) addMeal(userId, m);
+  return true;
+});
+
+export function updateMeal(userId, id, fields) {
+  const ok = _updateMeal.run({
+    id, user_id: userId,
+    amount: fields.amount ? String(fields.amount).slice(0, 60) : null,
+    grams: fields.grams != null ? Number(fields.grams) || null : null,
+    calories: mnum(fields.calories), protein: mnum(fields.protein), carbs: mnum(fields.carbs), fat: mnum(fields.fat),
+  }).changes > 0;
+  return ok ? rowToMeal(_getMeal.get(id, userId)) : null;
 }
 
 export function deleteMeal(userId, id) {
   return _deleteMeal.run(id, userId).changes > 0;
 }
 
-// Recently-logged distinct foods (for one-tap re-logging).
+// Copy every entry from one day to another (new rows, same slots).
+export const copyDayMeals = db.transaction((userId, from, to) => {
+  const src = listMeals(userId, from);
+  for (const m of src) addMeal(userId, { ...m, day: to });
+  return src.length;
+});
+
+// Recently-logged distinct foods (for one-tap re-logging), carrying grams/base
+// so re-logged items can still be rescaled when edited.
 const _recentFoods = db.prepare(`
-  SELECT name, brand, amount, calories, protein, carbs, fat, MAX(created_at) AS last
+  SELECT name, brand, amount, grams, base, calories, protein, carbs, fat, MAX(created_at) AS last
   FROM meals WHERE user_id = ?
   GROUP BY name, brand, amount
   ORDER BY last DESC
@@ -367,8 +409,42 @@ const _recentFoods = db.prepare(`
 export function recentFoods(userId) {
   return _recentFoods.all(userId).map((r) => ({
     name: r.name, brand: r.brand, amount: r.amount,
+    grams: r.grams, base: r.base ? JSON.parse(r.base) : null,
     calories: r.calories, protein: r.protein, carbs: r.carbs, fat: r.fat,
   }));
+}
+
+/* -------------------------------- recipes -------------------------------- */
+
+const _listRecipes = db.prepare("SELECT * FROM recipes WHERE user_id = ? ORDER BY created_at DESC");
+const _insertRecipe = db.prepare(
+  "INSERT INTO recipes (user_id, name, items, created_at) VALUES (@user_id, @name, @items, @created_at)"
+);
+const _deleteRecipe = db.prepare("DELETE FROM recipes WHERE id = ? AND user_id = ?");
+
+function rowToRecipe(r) {
+  return { id: r.id, name: r.name, items: JSON.parse(r.items) };
+}
+export function listRecipes(userId) {
+  return _listRecipes.all(userId).map(rowToRecipe);
+}
+export function addRecipe(userId, name, items) {
+  const clean = (Array.isArray(items) ? items : []).map((m) => ({
+    name: String(m.name || "Food").slice(0, 120),
+    brand: m.brand ? String(m.brand).slice(0, 80) : null,
+    amount: m.amount ? String(m.amount).slice(0, 60) : null,
+    grams: m.grams != null ? Number(m.grams) || null : null,
+    base: m.base || null,
+    calories: mnum(m.calories), protein: mnum(m.protein), carbs: mnum(m.carbs), fat: mnum(m.fat),
+  }));
+  _insertRecipe.run({
+    user_id: userId, name: String(name || "Meal").slice(0, 80),
+    items: JSON.stringify(clean), created_at: Date.now(),
+  });
+  return listRecipes(userId);
+}
+export function deleteRecipe(userId, id) {
+  return _deleteRecipe.run(id, userId).changes > 0;
 }
 
 /* ------------------------------- favorites ------------------------------- */
