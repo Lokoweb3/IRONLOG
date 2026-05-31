@@ -82,6 +82,13 @@ describe("program onboarding", () => {
     const r = await request(app).put("/program").set("Cookie", c).send({ days }).expect(200);
     assert.equal(r.body.days[0].name, "Leg Day");
   });
+  test("DELETE /program restarts onboarding (onboarded back to false)", async () => {
+    const c = cookieFor(newUser("pr3").id);
+    await request(app).post("/program/reset").set("Cookie", c).expect(200);
+    assert.equal((await request(app).get("/program").set("Cookie", c)).body.onboarded, true);
+    await request(app).delete("/program").set("Cookie", c).expect(200);
+    assert.equal((await request(app).get("/program").set("Cookie", c)).body.onboarded, false);
+  });
 });
 
 describe("profile + weights", () => {

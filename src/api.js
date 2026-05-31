@@ -120,6 +120,11 @@ export const api = {
     return data.days;
   },
 
+  // Clear the program so the setup wizard runs again (keeps history + profile).
+  async restartOnboarding() {
+    await request("DELETE", "/program");
+  },
+
   /* ----- profile (body stats, goal, macro targets) ----- */
 
   async getProfile() {

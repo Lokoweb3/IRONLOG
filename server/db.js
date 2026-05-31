@@ -276,6 +276,13 @@ export function saveProgram(userId, days) {
   return getProgram(userId);
 }
 
+// Remove the program row (sends the user back through onboarding). History +
+// profile are untouched.
+const _clearProgram = db.prepare("DELETE FROM programs WHERE user_id = ?");
+export function clearProgram(userId) {
+  return _clearProgram.run(userId).changes > 0;
+}
+
 /* -------------------------------- profile -------------------------------- */
 
 const _getProfile = db.prepare("SELECT data FROM profiles WHERE user_id = ?");

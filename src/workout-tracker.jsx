@@ -231,6 +231,18 @@ export default function App() {
     catch { setSyncError("Couldn't save your profile — please try again."); }
   };
 
+  const restartOnboarding = async () => {
+    try {
+      await api.restartOnboarding();     // clears the program row -> onboarded:false
+      setProgram([]);
+      setActive(null);
+      setOnboarded(false);               // re-shows the setup wizard
+      setView("train");
+    } catch {
+      setSyncError("Couldn't restart onboarding — please try again.");
+    }
+  };
+
   /* ---- onboarding: new user picks a starting program ---- */
   const chooseDefaultProgram = async () => {
     const days = await api.resetProgram();        // seeds the default 4-day split
@@ -379,7 +391,7 @@ export default function App() {
             {view === "history" && <HistoryView sessions={sessions} onDelete={deleteSession} onImport={importSessions} />}
             {view === "progress" && <ProgressView sessions={sessions} />}
             {view === "program" && <ProgramView program={program} onChange={updateProgram} onReset={resetProgram} />}
-            {view === "profile" && <ProfileView profile={profile} onSave={saveProfile} onBack={() => setView("train")} onLogout={logout} />}
+            {view === "profile" && <ProfileView profile={profile} onSave={saveProfile} onBack={() => setView("train")} onLogout={logout} onRestartOnboarding={restartOnboarding} />}
           </main>
 
           <nav className="tabbar">
@@ -623,9 +635,7 @@ function Onboarding({ user, profile, onSaveProfile, onUseDefault, onBuildOwn }) 
         </button>
       </div>
 
-      {!profileDone && (
-        <button className="login-back" style={{ width: "100%", marginTop: 12 }} onClick={() => setStep("stats")}>← Back to your details</button>
-      )}
+      <button className="login-back" style={{ width: "100%", marginTop: 12 }} onClick={() => setStep("stats")}>← Back to your details</button>
       {err && <div className="login-err" style={{ marginTop: 14 }}>{err}</div>}
       <p className="login-note">You can switch to the default or rebuild your program later from the Program tab.</p>
     </div>
@@ -1955,7 +1965,7 @@ function BarcodeScanner({ onResult, onClose }) {
 }
 
 /* ---------------------------- PROFILE VIEW ------------------------ */
-function ProfileView({ profile, onSave, onBack, onLogout }) {
+function ProfileView({ profile, onSave, onBack, onLogout, onRestartOnboarding }) {
   const init = profile || {};
   const [p, setP] = useState({
     sex: init.sex || "male",
@@ -1971,6 +1981,7 @@ function ProfileView({ profile, onSave, onBack, onLogout }) {
   const [saved, setSaved] = useState(false);
   const [weights, setWeights] = useState([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmRestart, setConfirmRestart] = useState(false);
   const [busy, setBusy] = useState("");
 
   // load the body-weight history for the trend chart
@@ -2156,6 +2167,9 @@ function ProfileView({ profile, onSave, onBack, onLogout }) {
         <button className="backup-btn" style={{ width: "100%" }} onClick={exportMine} disabled={busy === "export"}>
           <Download size={15} /> {busy === "export" ? "Preparing…" : "Export my data (JSON)"}
         </button>
+        <button className="backup-btn" style={{ width: "100%", marginTop: 10 }} onClick={() => setConfirmRestart(true)}>
+          <RotateCcw size={15} /> Restart onboarding
+        </button>
         <button className="btn-danger" style={{ width: "100%", marginTop: 10 }} onClick={() => setConfirmDelete(true)}>
           <Trash2 size={14} /> Delete account
         </button>
@@ -2166,6 +2180,19 @@ function ProfileView({ profile, onSave, onBack, onLogout }) {
       </div>
 
       <button className="login-back" style={{ width: "100%", marginTop: 14 }} onClick={onLogout}><LogOut size={14} style={{ verticalAlign: -2, marginRight: 6 }} />Sign out</button>
+
+      {confirmRestart && (
+        <div className="modal-bg" onClick={() => setConfirmRestart(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>Restart onboarding?</h3>
+            <p>This takes you back through setup (your details &amp; program choice). Your <strong>workout history is kept</strong>, but your current program is cleared and you'll pick again.</p>
+            <div className="modal-btns">
+              <button className="btn-ghost" onClick={() => setConfirmRestart(false)}>Cancel</button>
+              <button className="login-go" style={{ flex: 1, margin: 0 }} onClick={() => { setConfirmRestart(false); onRestartOnboarding(); }}>Restart</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {confirmDelete && (
         <div className="modal-bg" onClick={() => setConfirmDelete(false)}>

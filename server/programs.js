@@ -3,7 +3,7 @@
 //  A new user is seeded with the default 4-day split on first GET.
 // ---------------------------------------------------------------------------
 import { Router } from "express";
-import { getProgram, saveProgram } from "./db.js";
+import { getProgram, saveProgram, clearProgram } from "./db.js";
 import { DEFAULT_PROGRAM_DAYS } from "./defaultProgram.js";
 
 export const programsRouter = Router();
@@ -27,4 +27,10 @@ programsRouter.put("/", (req, res) => {
 // POST /program/reset -> restore the default program.
 programsRouter.post("/reset", (req, res) => {
   res.json({ days: saveProgram(req.user.id, DEFAULT_PROGRAM_DAYS) });
+});
+
+// DELETE /program -> clear the program so the user re-runs onboarding.
+programsRouter.delete("/", (req, res) => {
+  clearProgram(req.user.id);
+  res.json({ ok: true });
 });
