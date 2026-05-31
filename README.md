@@ -1,12 +1,28 @@
 # IRONLOG
 
-A workout tracker with **Google Sign-In** and a **synced backend**, so your accounts
-and workout history live on your server and follow you across devices.
+A full-stack **workout + nutrition tracker** with Google Sign-In and a synced backend, so
+each user's data lives on the server and follows them across devices. Installable PWA,
+deployed on Fly.io with continuous backups and CI/CD. **Live:** <https://lokoto-ironlog.fly.dev>
 
-- **Frontend:** Vite + React (`src/workout-tracker.jsx` is the whole UI), `lucide-react`, `recharts`
-- **Backend:** Node + Express
-- **Database:** SQLite via `better-sqlite3` (all DB access is isolated in `server/db.js` so you can swap to Postgres later)
-- **Auth:** Google Identity Services (GIS) — the modern `https://accounts.google.com/gsi/client` library, FedCM-enabled. The backend verifies every ID token with `google-auth-library` and issues its own httpOnly session cookie.
+### Features
+
+- **Auth** — Google Sign-In (GIS/FedCM); the server verifies the ID token and issues its own httpOnly session cookie.
+- **Onboarding** — a 2-step wizard: body stats + goal (auto-computes macro targets), then choose the default 4-day split or build a custom program. Re-runnable from Profile.
+- **Workouts** — editable per-user programs, set logging, rest timer (auto-rest, sound/vibrate), PR detection, estimated 1RM, calendar + history, per-lift strength trend charts.
+- **Exercise guides** — in-app form instructions + demo images (public-domain free-exercise-db), with a video-search fallback.
+- **Nutrition** — daily calories/macros vs auto-targets, grouped into **Breakfast/Lunch/Dinner/Snacks**; food **search** + **barcode lookup/scan** (Open Food Facts + USDA); servings or grams; **recent/favorites**, **saved meals (recipes)**, **copy-day**, and **edit/rescale** any entry.
+- **Body** — weight log + trend chart; goal-driven Mifflin–St Jeor macro targets.
+- **Sharing/growth** — marketing **landing page** for logged-out visitors; **shareable workout card** (canvas → native share/PNG).
+- **Account** — data export (JSON) and account deletion.
+- **PWA** — installable, offline app shell, themed; **in-app auto-update** banner on new deploys.
+
+### Stack
+
+- **Frontend:** Vite + React (`src/workout-tracker.jsx` is the whole UI), `lucide-react`, `recharts` (lazy), `@zxing/browser` (lazy, iOS barcode fallback)
+- **Backend:** Node + Express (`server/app.js` builds the app; `server/index.js` listens), with `helmet` + `express-rate-limit`
+- **Database:** SQLite via `better-sqlite3` — all SQL isolated in `server/db.js` (Postgres-swappable)
+- **Tests:** Node's built-in runner + `supertest` (`npm test`) · **CI/CD:** GitHub Actions runs tests/build and auto-deploys to Fly on push to `main`
+- **Backups:** Litestream → Fly Tigris (continuous, point-in-time)
 
 ---
 
@@ -14,20 +30,32 @@ and workout history live on your server and follow you across devices.
 
 ```
 .
-├── index.html              # loads the GIS script + the React app
-├── vite.config.js          # dev server + /auth and /workouts proxy to Express
-├── package.json            # one package.json for both frontend and backend
-├── .env / .env.example     # config (see below)
+├── index.html                 # loads the GIS script + the React app (+ PWA meta)
+├── vite.config.js             # dev server proxying API routes to Express
+├── package.json               # one package.json for frontend + backend
+├── Dockerfile                 # prod image (installs Litestream); run via scripts/run.sh
+├── fly.toml / litestream.yml  # Fly deploy + continuous backup config
+├── .github/workflows/ci.yml   # CI/CD: test + build + auto-deploy on push to main
+├── scripts/
+│   ├── run.sh                 # entrypoint: app under Litestream (or directly)
+│   └── generate-icons.mjs     # generates the PWA icons
+├── public/                    # manifest, service worker (sw.js), icons
 ├── src/
-│   ├── main.jsx            # React entrypoint
-│   ├── workout-tracker.jsx # your component (now auth- + API-wired)
-│   └── api.js              # fetch wrapper that replaced window.storage
+│   ├── main.jsx               # React entrypoint (+ build-hash for auto-update)
+│   ├── workout-tracker.jsx    # the entire UI
+│   ├── TrendChart.jsx         # lazy-loaded recharts chart
+│   └── api.js                 # fetch wrapper (with retries)
 ├── server/
-│   ├── index.js            # Express app; serves the built frontend in prod
-│   ├── auth.js             # GIS token verification, session cookie, requireAuth
-│   ├── workouts.js         # workout routes (all require auth)
-│   └── db.js               # the ONLY file with SQL — swap this for Postgres
-└── data/                   # SQLite file lives here (git-ignored)
+│   ├── app.js                 # builds the Express app (importable for tests)
+│   ├── index.js               # starts the HTTP listener
+│   ├── auth.js                # GIS verify, session cookie, requireAuth, export/delete
+│   ├── workouts.js · programs.js · profile.js · meals.js · weights.js
+│   ├── foods.js               # food search/barcode proxy (OFF + USDA)
+│   ├── exercises.js(.json)    # exercise form-guide lookup + slimmed dataset
+│   ├── defaultProgram.js      # the default 4-day split (onboarding seed)
+│   ├── db.js                  # the ONLY file with SQL — swap this for Postgres
+│   └── *.test.js              # backend tests
+└── data/                      # SQLite file lives here (git-ignored)
 ```
 
 ---
@@ -200,6 +228,17 @@ OAuth consent screen is either **published** or lists every tester under **Test 
 | `npm start` | Production: Express serves `dist/` and the API on `$PORT` |
 | `npm run preview` | Vite's static preview of `dist/` (no backend) |
 | `npm test` | Run the backend test suite (Node's built-in runner + supertest, in-memory DB) |
+| `npm run deploy` | `fly deploy --depot=false` (manual deploy; CI also deploys on push) |
+
+### Deploy: Fly.io + CI/CD (the live setup)
+
+The app runs on **Fly.io** (single always-on machine + a persistent volume for SQLite,
+Litestream backups). Pushing to `main` triggers **GitHub Actions**
+([.github/workflows/ci.yml](.github/workflows/ci.yml)) which runs `npm test` + `npm run
+build`, then **auto-deploys** with `flyctl deploy` using a `FLY_API_TOKEN` repo secret. So
+**`git push` = ship** (only if tests pass). The client polls `/api/version` and shows an
+in-app "update available" banner when a new build is live. The VPS instructions above are a
+self-host alternative.
 
 ---
 
@@ -212,20 +251,30 @@ All workout routes require the session cookie (set after `POST /auth/google`).
 | `POST /auth/google` | `{ credential }` (GIS ID token) | `{ user }` + sets cookie |
 | `POST /auth/logout` | – | `{ ok: true }`, clears cookie |
 | `GET /auth/me` | – | `{ user }` or `401` |
+| `GET /auth/export` | – | full JSON export of all the user's data |
+| `DELETE /auth/account` | – | deletes the account + all data (cascade), clears cookie |
 | `GET /workouts` | – | array of sessions, newest first |
 | `POST /workouts` | a session object | `{ workout }` |
 | `DELETE /workouts/:id` | – | `{ ok: true }` (only your own) |
 | `POST /workouts/import` | `{ sessions: [...] }` | `{ added, total }` (merge, never wipe) |
-| `GET /program` | – | `{ days, onboarded }` (no longer auto-seeds; `onboarded:false` for new users) |
+| `GET /program` | – | `{ days, onboarded }` (no auto-seed; `onboarded:false` for new users) |
 | `PUT /program` | `{ days: [...] }` | `{ days }` (save the user's edited program) |
 | `POST /program/reset` | – | `{ days }` (restore the default program) |
-| `GET /profile` | – | `{ profile }` (body stats, goal, macro targets; null if unset) |
-| `PUT /profile` | profile object | `{ profile }` |
-| `GET /meals?date=YYYY-MM-DD` | – | array of food entries for that day |
-| `POST /meals` | `{ day, name, brand?, amount?, calories, protein, carbs, fat }` | `{ meal }` |
-| `DELETE /meals/:id` | – | `{ ok: true }` (only your own) |
-| `GET /foods/search?q=` | – | `{ results }` proxied from Open Food Facts (normalized per-100g macros) |
-| `GET /exercises/lookup?name=&variation=` | – | `{ match }` form guide (instructions + demo images) or `null` |
+| `DELETE /program` | – | clears the program → re-run onboarding (keeps history/profile) |
+| `GET /profile` · `PUT /profile` | profile obj | body stats, goal, macro targets (`null` if unset) |
+| `GET /weights` · `POST /weights` · `DELETE /weights/:id` | `{ day, weightLbs }` | body-weight log for the trend chart |
+| `GET /meals?date=YYYY-MM-DD` | – | array of food entries for that day (with `slot`) |
+| `POST /meals` | `{ day, slot, name, amount?, grams?, base?, calories, protein, carbs, fat }` | `{ meal }` |
+| `PUT /meals/:id` | `{ amount?, grams?, calories, ... }` | `{ meal }` (edit/rescale an entry) |
+| `DELETE /meals/:id` | – | `{ ok: true }` |
+| `POST /meals/bulk` | `{ day, items:[...] }` | the day's meals (log many at once) |
+| `POST /meals/copy` | `{ from, to }` | copies a day's entries to another day |
+| `GET /meals/recent` · `GET/POST /meals/favorites` · `DELETE /meals/favorites/:id` | – | recents & favorites |
+| `GET/POST /meals/recipes` · `DELETE /meals/recipes/:id` | `{ name, items }` | saved meals |
+| `GET /foods/search?q=` | – | `{ results }` (Open Food Facts → USDA fallback) |
+| `GET /foods/barcode/:code` | – | `{ result }` single product by barcode, or `404` |
+| `GET /exercises/lookup?name=&variation=` | – | `{ match }` form guide, or `null` |
+| `GET /api/health` · `GET /api/version` | – | health check · deployed bundle hash (auto-update) |
 
 Exercise guides come from the public-domain [free-exercise-db](https://github.com/yuhonas/free-exercise-db)
 (slimmed into `server/exercises.json`; demo images served from jsDelivr). Matching uses
@@ -236,9 +285,12 @@ curated overrides for the default program plus a movement-class-guarded fuzzy ma
 
 - `users`: `id, google_sub (unique), email, name, picture, created_at`
 - `workouts`: `id, user_id, client_id, day_key, day_name, focus, tag, started_at, finished_at, exercises (JSON), created_at`
-- `programs`: `user_id (unique), days (JSON array of day objects), updated_at` — each user's editable program; new users are seeded with the default 4-day split.
-- `profiles`: `user_id (unique), data (JSON: sex, age, heightIn, weightLbs, activity, goal, targets), updated_at` — drives daily macro targets (Mifflin–St Jeor; computed client-side, overridable).
-- `meals`: `id, user_id, day (YYYY-MM-DD), name, brand, amount, calories, protein, carbs, fat, created_at` — the per-day food log.
+- `programs`: `user_id (unique), days (JSON), updated_at` — each user's editable program (default 4-day split is the onboarding seed; not auto-created).
+- `profiles`: `user_id (unique), data (JSON: sex, age, heightIn, weightLbs, activity, goal, targets), updated_at` — drives macro targets (Mifflin–St Jeor; overridable).
+- `meals`: `id, user_id, day, slot (breakfast/lunch/dinner/snacks), name, brand, amount, grams, base (JSON per-100g), calories, protein, carbs, fat, created_at` — per-day food log. `slot/grams/base` added via a startup migration in `db.js`.
+- `favorites`: `id, user_id, name, brand, amount, macros…` — starred foods.
+- `recipes`: `id, user_id, name, items (JSON array of food entries), created_at` — saved meals.
+- `weights`: `id, user_id, day (unique per user), weight_lbs, created_at` — body-weight log.
 
 Food search/barcode is proxied through `server/foods.js`. It tries **Open Food Facts**
 first (keyless **search-a-licious** API at `search.openfoodfacts.org` — the legacy
