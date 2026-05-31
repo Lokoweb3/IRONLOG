@@ -331,7 +331,7 @@ export default function App() {
     return (
       <div className="wt-root">
         <FontsAndStyles /><div className="grain" />
-        <Onboarding user={user} onUseDefault={chooseDefaultProgram} onBuildOwn={chooseBuildOwn} />
+        <Onboarding user={user} profile={profile} onSaveProfile={saveProfile} onUseDefault={chooseDefaultProgram} onBuildOwn={chooseBuildOwn} />
       </div>
     );
   }
@@ -490,9 +490,44 @@ function GoogleSignIn({ onLogin }) {
 /* ================================================================== */
 /*  ONBOARDING  (new user picks a starting program)                   */
 /* ================================================================== */
-function Onboarding({ user, onUseDefault, onBuildOwn }) {
-  const [busy, setBusy] = useState(null); // "default" | "own" | null
+function Onboarding({ user, profile, onSaveProfile, onUseDefault, onBuildOwn }) {
+  const init = profile || {};
+  const profileDone = !!(init.heightIn && init.weightLbs && init.targets);
+  const [step, setStep] = useState(profileDone ? "program" : "stats");
+  const [p, setP] = useState({
+    sex: init.sex || "male",
+    age: init.age ?? "",
+    heightFt: init.heightIn != null ? Math.floor(init.heightIn / 12) : "",
+    heightIn: init.heightIn != null ? init.heightIn % 12 : "",
+    weightLbs: init.weightLbs ?? "",
+    activity: init.activity || "moderate",
+    goal: init.goal || "lose_fat",
+  });
+  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(null);
   const [err, setErr] = useState("");
+
+  const firstName = (user?.name || "").split(" ")[0];
+  const heightIn = (Number(p.heightFt) || 0) * 12 + (Number(p.heightIn) || 0);
+  const computed = computeTargets({ ...p, heightIn });
+  const ready = p.sex && Number(p.age) > 0 && heightIn > 0 && Number(p.weightLbs) > 0 && p.goal;
+  const set = (k, v) => { setP((o) => ({ ...o, [k]: v })); setErr(""); };
+
+  const continueToProgram = async () => {
+    if (!ready) { setErr("Please fill in your age, height, weight and goal."); return; }
+    setSaving(true); setErr("");
+    try {
+      await onSaveProfile({
+        sex: p.sex, age: Number(p.age), heightIn, weightLbs: Number(p.weightLbs),
+        activity: p.activity, goal: p.goal, custom: false, targets: computed,
+      });
+      api.logWeight(localDayStr(), Number(p.weightLbs)).catch(() => {}); // start the trend
+      setStep("program");
+    } catch {
+      setErr("Couldn't save — please try again.");
+    }
+    setSaving(false);
+  };
 
   const pick = async (which, fn) => {
     setBusy(which); setErr("");
@@ -500,14 +535,75 @@ function Onboarding({ user, onUseDefault, onBuildOwn }) {
     catch { setErr("Something went wrong — please try again."); setBusy(null); }
   };
 
-  const firstName = (user?.name || "").split(" ")[0];
+  if (step === "stats") {
+    return (
+      <div className="login fade-in">
+        <div className="login-brand">
+          <span className="brand-mark big">▚</span>
+          <h1>IRONLOG</h1>
+          <p>{firstName ? `Welcome, ${firstName}` : "Welcome"} — tell us about you</p>
+        </div>
+
+        <div className="login-form">
+          <div className="seg">
+            {["male", "female"].map((s) => (
+              <button key={s} className={p.sex === s ? "seg-on" : ""} onClick={() => set("sex", s)}>{s === "male" ? "Male" : "Female"}</button>
+            ))}
+          </div>
+
+          <div className="prof-grid">
+            <div>
+              <label className="field-label">Age</label>
+              <input className="login-input" inputMode="numeric" value={p.age} onChange={(e) => set("age", e.target.value.replace(/[^\d]/g, ""))} />
+            </div>
+            <div>
+              <label className="field-label">Weight (lbs)</label>
+              <input className="login-input" inputMode="decimal" value={p.weightLbs} onChange={(e) => set("weightLbs", e.target.value.replace(/[^\d.]/g, ""))} />
+            </div>
+            <div>
+              <label className="field-label">Height (ft)</label>
+              <input className="login-input" inputMode="numeric" value={p.heightFt} onChange={(e) => set("heightFt", e.target.value.replace(/[^\d]/g, ""))} />
+            </div>
+            <div>
+              <label className="field-label">Height (in)</label>
+              <input className="login-input" inputMode="numeric" value={p.heightIn} onChange={(e) => set("heightIn", e.target.value.replace(/[^\d]/g, ""))} />
+            </div>
+          </div>
+
+          <label className="field-label" style={{ marginTop: 4 }}>Activity level</label>
+          <select className="ex-select" value={p.activity} onChange={(e) => set("activity", e.target.value)} style={{ marginBottom: 0 }}>
+            {Object.entries(ACTIVITY).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+          </select>
+
+          <label className="field-label" style={{ marginTop: 4 }}>Your goal</label>
+          <div className="goal-grid">
+            {Object.entries(GOALS).map(([k, v]) => (
+              <button key={k} className={`goal-pill ${p.goal === k ? "goal-on" : ""}`} onClick={() => set("goal", k)}>{v.label}</button>
+            ))}
+          </div>
+
+          {computed && (
+            <div className="onb-targets">
+              <span>Daily target</span>
+              <strong>{computed.calories} kcal</strong>
+              <em>P {computed.protein} · C {computed.carbs} · F {computed.fat}</em>
+            </div>
+          )}
+
+          {err && <div className="login-err">{err}</div>}
+          <button className="login-go" onClick={continueToProgram} disabled={saving}>{saving ? "Saving…" : "Continue →"}</button>
+          <p className="login-note">This sets your daily calorie &amp; macro targets. You can change it anytime in your profile.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="login fade-in">
       <div className="login-brand">
         <span className="brand-mark big">▚</span>
         <h1>IRONLOG</h1>
-        <p>{firstName ? `Welcome, ${firstName}` : "Welcome"} — how do you want to start?</p>
+        <p>Now pick your program</p>
       </div>
 
       <div className="onb-cards">
@@ -527,6 +623,9 @@ function Onboarding({ user, onUseDefault, onBuildOwn }) {
         </button>
       </div>
 
+      {!profileDone && (
+        <button className="login-back" style={{ width: "100%", marginTop: 12 }} onClick={() => setStep("stats")}>← Back to your details</button>
+      )}
       {err && <div className="login-err" style={{ marginTop: 14 }}>{err}</div>}
       <p className="login-note">You can switch to the default or rebuild your program later from the Program tab.</p>
     </div>
@@ -2738,6 +2837,11 @@ function FontsAndStyles() {
       .prof-targets-head { display:flex; align-items:center; justify-content:space-between; }
 
       /* ONBOARDING */
+      .onb-targets { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; background:rgba(216,255,54,.08);
+        border:1px solid var(--accent); border-radius:12px; padding:12px 14px; margin-top:4px; }
+      .onb-targets span { font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); }
+      .onb-targets strong { font-family:'Space Mono',monospace; font-size:20px; font-weight:700; color:var(--accent); }
+      .onb-targets em { font-family:'Space Mono',monospace; font-style:normal; font-size:12px; color:var(--text); margin-left:auto; }
       .onb-cards { width:100%; display:flex; flex-direction:column; gap:13px; }
       .onb-card { position:relative; text-align:left; background:linear-gradient(150deg, var(--surface2), var(--surface));
         border:1px solid var(--line); border-radius:16px; padding:20px; cursor:pointer; color:var(--text);
