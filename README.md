@@ -225,6 +225,12 @@ All workout routes require the session cookie (set after `POST /auth/google`).
 | `POST /meals` | `{ day, name, brand?, amount?, calories, protein, carbs, fat }` | `{ meal }` |
 | `DELETE /meals/:id` | – | `{ ok: true }` (only your own) |
 | `GET /foods/search?q=` | – | `{ results }` proxied from Open Food Facts (normalized per-100g macros) |
+| `GET /exercises/lookup?name=&variation=` | – | `{ match }` form guide (instructions + demo images) or `null` |
+
+Exercise guides come from the public-domain [free-exercise-db](https://github.com/yuhonas/free-exercise-db)
+(slimmed into `server/exercises.json`; demo images served from jsDelivr). Matching uses
+curated overrides for the default program plus a movement-class-guarded fuzzy matcher in
+`server/exercises.js`, so a "row" never resolves to a "press".
 
 **Data model**
 
