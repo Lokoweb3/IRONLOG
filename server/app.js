@@ -70,6 +70,16 @@ if (IS_PROD) {
   if (!fs.existsSync(distDir)) {
     console.warn("[server] dist/ not found — run `npm run build` before `npm start`.");
   }
+
+  // The hash of the currently-deployed frontend bundle. A new deploy = new
+  // server process = new hash, which the client polls to detect updates.
+  let bundleHash = null;
+  try {
+    const html = fs.readFileSync(path.join(distDir, "index.html"), "utf8");
+    bundleHash = (html.match(/index-([A-Za-z0-9_-]+)\.js/) || [])[1] || null;
+  } catch { /* no dist yet */ }
+  app.get("/api/version", (_req, res) => res.json({ bundle: bundleHash }));
+
   app.use(express.static(distDir));
   // SPA fallback: anything that isn't an API route returns index.html
   app.get("*", (req, res, next) => {

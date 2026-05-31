@@ -164,6 +164,7 @@ export default function App() {
   const [booting, setBooting] = useState(true);    // resolving the current session
   const [dataLoading, setDataLoading] = useState(false); // loading workouts from API
   const [syncError, setSyncError] = useState("");
+  const [updateReady, setUpdateReady] = useState(false); // a newer build has deployed
 
   // boot: ask the server who we are (reads the session cookie)
   useEffect(() => {
@@ -176,6 +177,27 @@ export default function App() {
       }
       setBooting(false);
     })();
+  }, []);
+
+  // detect new deploys: poll the server's bundle hash vs the one we're running
+  useEffect(() => {
+    if (!import.meta.env.PROD) return;
+    let stop = false;
+    const check = async () => {
+      try {
+        const r = await fetch("/api/version", { cache: "no-store" });
+        if (!r.ok) return;
+        const { bundle } = await r.json();
+        if (bundle && window.__BUILD__ && window.__BUILD__ !== "dev" && bundle !== window.__BUILD__ && !stop) {
+          setUpdateReady(true);
+        }
+      } catch { /* offline — ignore */ }
+    };
+    check();
+    const id = setInterval(check, 90000);
+    const onVis = () => document.visibilityState === "visible" && check();
+    document.addEventListener("visibilitychange", onVis);
+    return () => { stop = true; clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
   }, []);
 
   // load the signed-in user's workouts + program whenever the user changes
@@ -353,6 +375,12 @@ export default function App() {
     <div className="wt-root">
       <FontsAndStyles />
       <div className="grain" />
+
+      {updateReady && (
+        <button className="update-banner" onClick={() => window.location.reload()}>
+          <RotateCcw size={14} /> New version available — tap to update
+        </button>
+      )}
 
       {dataLoading ? (
         <div className="loader"><Dumbbell size={28} /><span>Loading your log…</span></div>
@@ -2595,6 +2623,12 @@ function FontsAndStyles() {
       .sync-error { margin:0 16px; padding:10px 13px; background:rgba(255,90,77,.12);
         border:1px solid var(--danger); border-radius:10px; color:var(--danger); font-size:12.5px;
         font-family:'Archivo'; cursor:pointer; }
+
+      .update-banner { position:sticky; top:0; z-index:30; width:100%; display:flex; align-items:center;
+        justify-content:center; gap:8px; background:var(--accent); color:#101200; border:none;
+        font-family:'Archivo'; font-weight:700; font-size:13px; padding:11px; cursor:pointer;
+        box-shadow:0 4px 16px rgba(0,0,0,.4); }
+      .update-banner svg { color:#101200; }
 
       /* LOGIN */
       .login { min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center;
