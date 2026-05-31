@@ -722,6 +722,7 @@ function CalendarView({ sessions, program }) {
 function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [restSignal, setRestSignal] = useState(0);
+  const [help, setHelp] = useState(null); // { name, variation } for the form-guide modal
 
   const update = (mut) => setActive((prev) => {
     const copy = structuredClone(prev);
@@ -811,7 +812,7 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
                 <span className="ex-num">{String(ei + 1).padStart(2, "0")}</span>
                 <h3>{ex.name}</h3>
                 {isPR && <span className="pr-badge"><Trophy size={11} /> PR</span>}
-                <button className="howto-btn" onClick={() => openTutorial(ex.name, ex.variation)} title="How to perform this exercise">
+                <button className="howto-btn" onClick={() => setHelp({ name: ex.name, variation: ex.variation })} title="How to perform this exercise">
                   <PlayCircle size={13} /> How-to
                 </button>
               </div>
@@ -902,6 +903,73 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
           </div>
         </div>
       )}
+
+      {help && <ExerciseHelp name={help.name} variation={help.variation} onClose={() => setHelp(null)} />}
+    </div>
+  );
+}
+
+/* --------------------------- EXERCISE GUIDE ----------------------- */
+// Alternates the two demo photos (start/end position) to mimic the movement.
+function ExerciseImages({ images }) {
+  const [i, setI] = useState(0);
+  useEffect(() => {
+    if (!images || images.length < 2) return;
+    const id = setInterval(() => setI((v) => (v + 1) % images.length), 1100);
+    return () => clearInterval(id);
+  }, [images]);
+  if (!images || !images.length) return null;
+  return (
+    <div className="help-img-wrap">
+      <img className="help-img" src={images[i]} alt="" loading="lazy" referrerPolicy="no-referrer" />
+    </div>
+  );
+}
+
+function ExerciseHelp({ name, variation, onClose }) {
+  const [loading, setLoading] = useState(true);
+  const [match, setMatch] = useState(null);
+
+  useEffect(() => {
+    let on = true;
+    setLoading(true);
+    api.lookupExercise(name, variation)
+      .then((m) => { if (on) { setMatch(m); setLoading(false); } })
+      .catch(() => { if (on) { setMatch(null); setLoading(false); } });
+    return () => { on = false; };
+  }, [name, variation]);
+
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="help-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="food-head">
+          <h3>{name}{variation ? ` · ${variation}` : ""}</h3>
+          <button className="icon-btn sm" onClick={onClose}><X size={18} /></button>
+        </div>
+
+        {loading ? (
+          <p className="chart-hint" style={{ padding: 36 }}>Loading guide…</p>
+        ) : match ? (
+          <div className="help-body">
+            <ExerciseImages images={match.images} />
+            {match.primaryMuscles?.length > 0 && (
+              <p className="help-muscles"><Flame size={12} /> Targets: {match.primaryMuscles.join(", ")}</p>
+            )}
+            <ol className="help-steps">
+              {match.instructions.map((s, i) => <li key={i}>{s}</li>)}
+            </ol>
+            {match.name.toLowerCase() !== name.toLowerCase() && (
+              <p className="help-note">Form guide shown for <strong>{match.name}</strong> — the closest match.</p>
+            )}
+          </div>
+        ) : (
+          <p className="help-empty">No in-app guide for this exercise yet — use the video search below.</p>
+        )}
+
+        <a className="howto-video" href={tutorialUrl(name, variation)} target="_blank" rel="noopener noreferrer">
+          <PlayCircle size={15} /> Watch form videos on YouTube
+        </a>
+      </div>
     </div>
   );
 }
@@ -2353,6 +2421,25 @@ function FontsAndStyles() {
         font-weight:600; font-size:11px; padding:5px 10px; border-radius:99px; cursor:pointer; }
       .howto-btn:active { border-color:var(--accent); color:var(--accent); }
       .howto-btn svg { color:var(--accent); }
+
+      /* EXERCISE GUIDE MODAL */
+      .help-modal { position:relative; background:var(--surface); border:1px solid var(--line); border-radius:18px;
+        padding:16px; width:100%; max-width:440px; max-height:86vh; display:flex; flex-direction:column; overflow:hidden; }
+      .help-body { overflow-y:auto; }
+      .help-img-wrap { width:100%; aspect-ratio:5/4; background:#fff; border-radius:12px; overflow:hidden; margin-bottom:12px; }
+      .help-img { width:100%; height:100%; object-fit:contain; }
+      .help-muscles { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--accent);
+        font-family:'Space Mono',monospace; text-transform:capitalize; margin:0 0 10px; }
+      .help-steps { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:9px; }
+      .help-steps li { font-size:13.5px; line-height:1.55; color:var(--text); }
+      .help-steps li::marker { color:var(--accent); font-family:'Space Mono',monospace; font-weight:700; }
+      .help-note { margin:12px 2px 0; font-size:11.5px; color:var(--muted); line-height:1.5; }
+      .help-empty { padding:24px 14px; color:var(--muted); font-size:13.5px; line-height:1.6; text-align:center; }
+      .howto-video { display:flex; align-items:center; justify-content:center; gap:8px; margin-top:12px; flex-shrink:0;
+        background:var(--surface2); border:1px solid var(--line); color:var(--text); text-decoration:none;
+        font-family:'Archivo'; font-weight:600; font-size:13px; padding:12px; border-radius:11px; }
+      .howto-video:active { border-color:var(--accent); color:var(--accent); }
+      .howto-video svg { color:var(--accent); }
 
       .var-row { display:flex; flex-wrap:wrap; gap:7px; margin:11px 0 4px; }
       .var-pill { background:var(--surface2); border:1px solid var(--line); color:var(--muted); font-family:'Archivo';

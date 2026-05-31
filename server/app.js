@@ -18,6 +18,7 @@ import { profileRouter } from "./profile.js";
 import { mealsRouter } from "./meals.js";
 import { foodsRouter } from "./foods.js";
 import { weightsRouter } from "./weights.js";
+import { exercisesRouter } from "./exercises.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const IS_PROD = process.env.NODE_ENV === "production";
@@ -61,6 +62,7 @@ app.use("/profile", requireAuth, profileRouter);   // body stats, goal, targets
 app.use("/meals", requireAuth, mealsRouter);       // per-day food log + recent/favorites
 app.use("/foods", requireAuth, foodsRouter);       // external food search proxy
 app.use("/weights", requireAuth, weightsRouter);   // body-weight log for the trend chart
+app.use("/exercises", requireAuth, exercisesRouter); // in-app exercise form guides
 
 // --- Static frontend (production only) ---
 if (IS_PROD) {
@@ -74,7 +76,8 @@ if (IS_PROD) {
     if (req.path.startsWith("/auth") || req.path.startsWith("/workouts") ||
         req.path.startsWith("/program") || req.path.startsWith("/profile") ||
         req.path.startsWith("/meals") || req.path.startsWith("/foods") ||
-        req.path.startsWith("/weights") || req.path.startsWith("/api")) {
+        req.path.startsWith("/weights") || req.path.startsWith("/exercises") ||
+        req.path.startsWith("/api")) {
       return next();
     }
     res.sendFile(path.join(distDir, "index.html"));

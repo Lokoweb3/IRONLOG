@@ -144,6 +144,13 @@ export const api = {
     await request("DELETE", `/meals/${encodeURIComponent(id)}`);
   },
 
+  // In-app exercise form guide (instructions + demo images), or null.
+  async lookupExercise(name, variation) {
+    const data = await request("GET",
+      `/exercises/lookup?name=${encodeURIComponent(name)}&variation=${encodeURIComponent(variation || "")}`);
+    return data.match;
+  },
+
   // Search the external food database; returns normalized results.
   async searchFoods(q) {
     const data = await request("GET", `/foods/search?q=${encodeURIComponent(q)}`);

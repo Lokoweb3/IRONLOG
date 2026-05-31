@@ -3,7 +3,7 @@
 //   * /auth, /workouts, /api  -> always network (never cache auth or data)
 //   * navigations (HTML)       -> network-first, fall back to cached shell offline
 //   * other GET (hashed assets, icons) -> cache-first (filenames are immutable)
-const CACHE = "ironlog-v3";
+const CACHE = "ironlog-v4";
 const SHELL = ["/", "/index.html", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -28,7 +28,8 @@ self.addEventListener("fetch", (event) => {
       (url.pathname.startsWith("/auth") || url.pathname.startsWith("/workouts") ||
        url.pathname.startsWith("/program") || url.pathname.startsWith("/profile") ||
        url.pathname.startsWith("/meals") || url.pathname.startsWith("/foods") ||
-       url.pathname.startsWith("/weights") || url.pathname.startsWith("/api"))) {
+       url.pathname.startsWith("/weights") || url.pathname.startsWith("/exercises") ||
+       url.pathname.startsWith("/api"))) {
     return; // let it hit the network normally
   }
 
