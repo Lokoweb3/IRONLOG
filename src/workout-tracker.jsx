@@ -509,7 +509,7 @@ export default function App() {
 
           <main className="content">
             {view === "train" && <TrainView sessions={sessions} program={program} onStart={startWorkout} onEditProgram={() => setView("program")} />}
-            {view === "meal" && <MealView profile={profile} onGoProfile={() => setView("profile")} />}
+            {view === "meal" && <MealView profile={profile} sessions={sessions} onGoProfile={() => setView("profile")} />}
             {view === "calendar" && <CalendarView sessions={sessions} program={program} />}
             {view === "history" && <HistoryView sessions={sessions} onDelete={deleteSession} onImport={importSessions} />}
             {view === "progress" && <ProgressView sessions={sessions} />}
@@ -1731,7 +1731,26 @@ const sumMacros = (list) => list.reduce(
   { calories: 0, protein: 0, carbs: 0, fat: 0 }
 );
 
-function MealView({ profile, onGoProfile }) {
+// Rough active-calorie estimate for a logged workout: MET × bodyweight(kg) × hours.
+// ~5 METs is typical for general resistance training. Returns 0 if we can't tell
+// (no duration, or no bodyweight on file). It's an estimate, always user-editable.
+const STRENGTH_MET = 5.0;
+function estimateBurn(session, weightLbs) {
+  const w = Number(weightLbs);
+  if (!w || !session?.startedAt || !session?.finishedAt) return 0;
+  const hrs = Math.max(0, (session.finishedAt - session.startedAt) / 3600000);
+  if (!hrs || hrs > 6) return 0; // ignore zero / runaway timers
+  const kg = w / 2.2046226;
+  return Math.round(STRENGTH_MET * kg * hrs);
+}
+// Sum the estimate across every workout that started on `day` (local date string).
+function estimateDayBurn(sessions, day, weightLbs) {
+  return (sessions || [])
+    .filter((s) => s.startedAt && localDayStr(new Date(s.startedAt)) === day)
+    .reduce((sum, s) => sum + estimateBurn(s, weightLbs), 0);
+}
+
+function MealView({ profile, sessions, onGoProfile }) {
   const [day, setDay] = useState(localDayStr());
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1739,18 +1758,34 @@ function MealView({ profile, onGoProfile }) {
   const [editing, setEditing] = useState(null);      // entry being edited
   const [saveItems, setSaveItems] = useState(null);  // entries to name & save as a meal
   const [copyBusy, setCopyBusy] = useState(false);
+  const [burned, setBurned] = useState(null);        // { calories, source } | null
   const targets = profile?.targets || null;
 
   useEffect(() => {
     let on = true;
     setLoading(true);
+    setBurned(null);
     api.getMeals(day)
       .then((r) => { if (on) { setEntries(Array.isArray(r) ? r : []); setLoading(false); } })
       .catch(() => { if (on) { setEntries([]); setLoading(false); } });
+    api.getActivity(day)
+      .then((a) => { if (on) setBurned(a || null); })
+      .catch(() => { if (on) setBurned(null); });
     return () => { on = false; };
   }, [day]);
 
   const totals = sumMacros(entries);
+  const burnedCals = burned?.calories || 0;
+
+  const saveBurn = async (calories, source) => {
+    const prev = burned;
+    const next = calories > 0 ? { calories, source } : null;
+    setBurned(next);
+    try {
+      if (calories > 0) await api.logActivity(day, calories, source);
+      else await api.clearActivity(day);
+    } catch { setBurned(prev); }
+  };
 
   const addEntry = async (entry) => {
     const tmp = { ...entry, id: `tmp-${Date.now()}` };
@@ -1806,6 +1841,15 @@ function MealView({ profile, onGoProfile }) {
         ))}
       </div>
 
+      <BurnCard
+        burned={burnedCals}
+        source={burned?.source}
+        eaten={totals.calories}
+        calorieTarget={targets?.calories}
+        estimate={estimateDayBurn(sessions, day, profile?.weightLbs)}
+        onSave={saveBurn}
+      />
+
       <button className="meal-copy" onClick={copyPrevDay} disabled={copyBusy}>
         <Copy size={14} /> {copyBusy ? "Copying…" : "Copy yesterday's meals"}
       </button>
@@ -1853,6 +1897,66 @@ function MealView({ profile, onGoProfile }) {
       )}
       {editing && <EditEntry entry={editing} onSave={(fields) => { updateEntry(editing.id, fields); setEditing(null); }} onClose={() => setEditing(null)} />}
       {saveItems && <SaveMeal items={saveItems} onClose={() => setSaveItems(null)} />}
+    </div>
+  );
+}
+
+/* ---- calories burned (manual entry or workout estimate) + net budget ---- */
+function BurnCard({ burned, source, eaten, calorieTarget, estimate, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState("");
+
+  const open = () => { setVal(burned ? String(Math.round(burned)) : ""); setEditing(true); };
+  const commit = () => { onSave(Math.max(0, Math.round(Number(val) || 0)), "manual"); setEditing(false); };
+  const useEstimate = () => { onSave(estimate, "estimate"); setEditing(false); };
+
+  // Net = what you ate minus what you burned; budget gets the burn added back.
+  const net = Math.round(eaten - burned);
+  const remaining = calorieTarget ? Math.round(calorieTarget - eaten + burned) : null;
+
+  return (
+    <div className="burn-card">
+      <div className="burn-head">
+        <div className="burn-title"><Flame size={15} /> Calories burned</div>
+        {!editing && (
+          <button className="burn-edit" onClick={open}>
+            {burned > 0 ? <><strong>{Math.round(burned)}</strong> kcal <Pencil size={12} /></> : <>＋ Add</>}
+          </button>
+        )}
+      </div>
+
+      {editing ? (
+        <div className="burn-edit-row">
+          <input className="login-input burn-input" inputMode="numeric" autoFocus placeholder="0"
+            value={val} onChange={(e) => setVal(e.target.value.replace(/[^\d]/g, ""))}
+            onKeyDown={(e) => e.key === "Enter" && commit()} />
+          <span className="burn-unit">kcal</span>
+          <button className="burn-save" onClick={commit}>Save</button>
+          <button className="burn-cancel" onClick={() => setEditing(false)}>Cancel</button>
+        </div>
+      ) : (
+        <>
+          {estimate > 0 && Math.round(burned) !== estimate && (
+            <button className="burn-estimate" onClick={useEstimate}>
+              Use today's workout estimate · ~{estimate} kcal
+            </button>
+          )}
+          {calorieTarget ? (
+            <div className="burn-net">
+              <span>Net <strong>{net.toLocaleString()}</strong> / {Math.round(calorieTarget).toLocaleString()} kcal</span>
+              <span className={remaining < 0 ? "burn-over" : "burn-left"}>
+                {remaining < 0 ? `${Math.abs(remaining).toLocaleString()} over` : `${remaining.toLocaleString()} left`}
+              </span>
+            </div>
+          ) : (
+            burned > 0 && <p className="burn-hint">Net intake: {net.toLocaleString()} kcal eaten − burned</p>
+          )}
+          <p className="burn-foot">
+            {source === "estimate" ? "Estimated from your workout — " : ""}
+            Read it off your Apple Watch and tap to adjust. Burned calories add back to your daily budget.
+          </p>
+        </>
+      )}
     </div>
   );
 }
@@ -3239,6 +3343,32 @@ function FontsAndStyles() {
         padding:10px; border-radius:11px; cursor:pointer; margin:2px 0 14px; }
       .meal-copy:active { border-color:var(--accent); color:var(--accent); }
       .meal-copy svg { color:var(--accent); }
+
+      /* CALORIES BURNED CARD */
+      .burn-card { background:var(--surface); border:1px solid var(--line); border-radius:13px; padding:12px 13px; margin:0 0 14px; }
+      .burn-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+      .burn-title { display:flex; align-items:center; gap:7px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); }
+      .burn-title svg { color:#ff7a3d; }
+      .burn-edit { display:flex; align-items:center; gap:5px; background:var(--surface2); border:1px solid var(--line);
+        color:var(--text); font-family:'Space Mono',monospace; font-size:13px; padding:5px 11px; border-radius:9px; cursor:pointer; }
+      .burn-edit strong { color:#ff7a3d; }
+      .burn-edit svg { color:var(--muted); }
+      .burn-edit-row { display:flex; align-items:center; gap:7px; margin-top:10px; }
+      .burn-input { margin:0; width:90px; text-align:center; }
+      .burn-unit { font-size:12px; color:var(--muted); font-family:'Space Mono',monospace; }
+      .burn-save { margin-left:auto; background:var(--accent); color:#0b0b0c; border:none; font-family:'Archivo'; font-weight:700;
+        font-size:13px; padding:8px 16px; border-radius:9px; cursor:pointer; }
+      .burn-cancel { background:none; border:none; color:var(--muted); font-family:'Archivo'; font-size:13px; cursor:pointer; padding:8px 4px; }
+      .burn-estimate { width:100%; margin-top:10px; background:rgba(255,122,61,.09); border:1px dashed rgba(255,122,61,.4);
+        color:#ff9a66; font-family:'Archivo'; font-weight:600; font-size:12.5px; padding:9px; border-radius:10px; cursor:pointer; }
+      .burn-estimate:active { background:rgba(255,122,61,.16); }
+      .burn-net { display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-top:11px;
+        font-family:'Space Mono',monospace; font-size:13px; color:var(--text); }
+      .burn-net strong { color:var(--accent); font-size:15px; }
+      .burn-left { color:var(--muted); font-size:11px; }
+      .burn-over { color:var(--danger); font-size:11px; }
+      .burn-hint { margin:9px 0 0; font-size:11px; color:var(--muted); font-family:'Space Mono',monospace; }
+      .burn-foot { margin:9px 0 0; font-size:10.5px; line-height:1.45; color:var(--muted); }
 
       /* MEAL SLOTS */
       .slot-sec { margin-bottom:14px; }

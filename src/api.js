@@ -226,4 +226,19 @@ export const api = {
   async deleteWeight(id) {
     await request("DELETE", `/weights/${encodeURIComponent(id)}`);
   },
+
+  /* ----- activity (calories burned) ----- */
+
+  // One day's burned-calorie entry, or null if nothing logged.
+  async getActivity(date) {
+    const data = await request("GET", `/activity?date=${encodeURIComponent(date)}`);
+    return data.activity; // { day, calories, source } | null
+  },
+  async logActivity(day, calories, source) {
+    const data = await request("POST", "/activity", { day, calories, source });
+    return data.activity;
+  },
+  async clearActivity(date) {
+    await request("DELETE", `/activity?date=${encodeURIComponent(date)}`);
+  },
 };

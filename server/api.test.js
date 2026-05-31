@@ -166,14 +166,42 @@ describe("meal slots, edit, copy, recipes", () => {
   });
 });
 
+describe("activity (calories burned)", () => {
+  test("null until logged; upsert overwrites; clear removes; validation", async () => {
+    const c = cookieFor(newUser("act").id);
+    const day = "2026-05-30";
+    assert.equal((await request(app).get(`/activity?date=${day}`).set("Cookie", c)).body.activity, null);
+
+    const p = await request(app).post("/activity").set("Cookie", c).send({ day, calories: 450, source: "manual" }).expect(201);
+    assert.equal(p.body.activity.calories, 450);
+    assert.equal(p.body.activity.source, "manual");
+
+    const p2 = await request(app).post("/activity").set("Cookie", c).send({ day, calories: 500, source: "estimate" }).expect(201);
+    assert.equal(p2.body.activity.calories, 500);
+    assert.equal((await request(app).get(`/activity?date=${day}`).set("Cookie", c)).body.activity.calories, 500);
+
+    await request(app).delete(`/activity?date=${day}`).set("Cookie", c).expect(200);
+    assert.equal((await request(app).get(`/activity?date=${day}`).set("Cookie", c)).body.activity, null);
+
+    await request(app).post("/activity").set("Cookie", c).send({ day: "bad", calories: 1 }).expect(400);
+    await request(app).post("/activity").set("Cookie", c).send({ day, calories: -5 }).expect(400);
+    await request(app).get("/activity").set("Cookie", c).expect(400); // missing date
+  });
+  test("requires auth", async () => {
+    await request(app).get("/activity?date=2026-05-30").expect(401);
+  });
+});
+
 describe("account export + delete", () => {
   test("export returns bundle; delete cascades and kills session", async () => {
     const u = newUser("acc");
     const c = cookieFor(u.id);
     await request(app).post("/weights").set("Cookie", c).send({ day: "2026-05-30", weightLbs: 200 }).expect(201);
+    await request(app).post("/activity").set("Cookie", c).send({ day: "2026-05-30", calories: 300 }).expect(201);
     const ex = await request(app).get("/auth/export").set("Cookie", c).expect(200);
     assert.equal(ex.body.app, "IRONLOG");
     assert.equal(ex.body.weights.length, 1);
+    assert.equal(ex.body.activity.length, 1);
     await request(app).delete("/auth/account").set("Cookie", c).expect(200);
     await request(app).get("/auth/me").set("Cookie", c).expect(401); // user is gone
   });

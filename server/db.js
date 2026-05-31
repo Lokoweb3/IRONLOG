@@ -107,6 +107,16 @@ db.exec(`
     items      TEXT    NOT NULL,           -- JSON array of food entries
     created_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS activity (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    day        TEXT    NOT NULL,           -- local date 'YYYY-MM-DD'
+    calories   REAL    NOT NULL DEFAULT 0, -- active calories burned that day
+    source     TEXT,                       -- 'manual' | 'estimate'
+    created_at INTEGER NOT NULL,
+    UNIQUE (user_id, day)
+  );
 `);
 
 // --- lightweight migrations: add columns to existing meals tables ---
@@ -193,6 +203,7 @@ export function exportUserData(userId) {
     meals: allMeals.map(rowToMeal),
     weights: listWeights(userId),
     favorites: listFavorites(userId),
+    activity: listActivity(userId),
   };
 }
 
@@ -504,6 +515,42 @@ export function upsertWeight(userId, day, weightLbs) {
 }
 export function deleteWeight(userId, id) {
   return _deleteWeight.run(id, userId).changes > 0;
+}
+
+/* -------------------------- activity (cals burned) ----------------------- */
+
+const _getActivity = db.prepare("SELECT day, calories, source FROM activity WHERE user_id = ? AND day = ?");
+const _listActivity = db.prepare("SELECT day, calories, source FROM activity WHERE user_id = ? ORDER BY day ASC");
+const _upsertActivity = db.prepare(`
+  INSERT INTO activity (user_id, day, calories, source, created_at)
+  VALUES (@user_id, @day, @calories, @source, @created_at)
+  ON CONFLICT (user_id, day) DO UPDATE SET calories = excluded.calories, source = excluded.source
+`);
+const _deleteActivity = db.prepare("DELETE FROM activity WHERE user_id = ? AND day = ?");
+
+function rowToActivity(r) {
+  return r ? { day: r.day, calories: r.calories, source: r.source || null } : null;
+}
+
+// One day's active-calorie entry, or null if nothing logged for that day.
+export function getActivity(userId, day) {
+  return rowToActivity(_getActivity.get(userId, String(day)));
+}
+export function listActivity(userId) {
+  return _listActivity.all(userId).map(rowToActivity);
+}
+// Upsert a day's burned calories. Returns the saved entry.
+export function upsertActivity(userId, day, calories, source) {
+  _upsertActivity.run({
+    user_id: userId, day: String(day),
+    calories: Math.max(0, Math.round(Number(calories) || 0)),
+    source: source === "estimate" ? "estimate" : "manual",
+    created_at: Date.now(),
+  });
+  return getActivity(userId, day);
+}
+export function deleteActivity(userId, day) {
+  return _deleteActivity.run(userId, String(day)).changes > 0;
 }
 
 export default db;
