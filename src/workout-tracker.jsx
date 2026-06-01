@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, lazy, Suspense } from "react";
+import { createPortal } from "react-dom";
 import {
   Dumbbell, History, TrendingUp, Plus, Check, X, Timer,
   ChevronLeft, Trash2, Flame, ChevronDown, ChevronRight, ChevronUp, Play, Pause, RotateCcw,
@@ -1246,6 +1247,7 @@ function RestTimer({ autoSignal = 0 }) {
   const [auto, setAuto] = useState(true);
   const [muted, setMuted] = useState(false);
   const [duration, setDuration] = useState(90);
+  const [overlay, setOverlay] = useState("hidden"); // 'hidden' | 'running' | 'done' — the on-screen popup
   const endRef = useRef(0);       // wall-clock ms when the current countdown ends
   const tick = useRef(null);
   const audioRef = useRef(null);
@@ -1287,6 +1289,7 @@ function RestTimer({ autoSignal = 0 }) {
     if (left <= 0) {
       setRunning(false);
       if (!firedRef.current) { firedRef.current = true; fireAlert(); }
+      setOverlay((o) => (o === "running" ? "done" : o)); // popup switches to "rest complete"
     }
     return left;
   };
@@ -1311,8 +1314,16 @@ function RestTimer({ autoSignal = 0 }) {
     endRef.current = Date.now() + secs * 1000;
     setRemaining(secs);
     setRunning(true);
+    setOverlay("running"); // show the on-screen popup
   };
-  const start = (s) => { setDuration(s); begin(s); setOpen(true); };
+  const start = (s) => { setDuration(s); begin(s); setOpen(false); };
+
+  // auto-dismiss the "rest complete" popup a few seconds after it ends
+  useEffect(() => {
+    if (overlay !== "done") return;
+    const t = setTimeout(() => setOverlay("hidden"), 4000);
+    return () => clearTimeout(t);
+  }, [overlay]);
 
   // auto-start whenever a set is checked done
   useEffect(() => {
@@ -1332,13 +1343,14 @@ function RestTimer({ autoSignal = 0 }) {
     setRemaining(next);
     if (running) { endRef.current = Date.now() + next * 1000; if (next > 0) firedRef.current = false; }
   };
-  const skip = () => { setRunning(false); setRemaining(0); firedRef.current = true; };
+  const skip = () => { setRunning(false); setRemaining(0); firedRef.current = true; setOverlay("hidden"); };
 
   const mmss = `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}`;
   const live = running || remaining > 0;          // a countdown is in progress (running or paused)
   const pctLeft = duration ? Math.min(100, Math.max(0, (remaining / duration) * 100)) : 0;
 
   return (
+    <>
     <div className="rest">
       <button className={`icon-btn timer-btn ${live ? "timer-on" : ""} ${running ? "timer-live" : ""}`} onClick={() => setOpen((o) => !o)}>
         {live ? <span className="timer-count">{mmss}</span> : <Timer size={20} />}
@@ -1379,6 +1391,32 @@ function RestTimer({ autoSignal = 0 }) {
         </div>
       )}
     </div>
+
+    {overlay !== "hidden" && createPortal(
+      <div className="rest-overlay">
+        <div className="rest-overlay-card">
+          {overlay === "done" ? (
+            <>
+              <div className="rest-ov-done"><Check size={20} /> Rest complete</div>
+              <button className="rest-ov-btn primary" onClick={() => setOverlay("hidden")}>Start next set</button>
+            </>
+          ) : (
+            <>
+              <div className="rest-ov-label"><Timer size={14} /> {running ? "Resting" : "Paused"}</div>
+              <div className="rest-ov-time">{mmss}</div>
+              <div className="rest-ov-track"><div style={{ width: `${pctLeft}%` }} /></div>
+              <div className="rest-ov-btns">
+                <button className="rest-ov-btn" onClick={() => adjust(15)}>+15s</button>
+                <button className="rest-ov-btn" onClick={togglePause}>{running ? "Pause" : "Resume"}</button>
+                <button className="rest-ov-btn primary" onClick={skip}>End rest</button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>,
+      document.body
+    )}
+    </>
   );
 }
 
@@ -3293,6 +3331,28 @@ function FontsAndStyles() {
       .rest-ctrl { display:flex; gap:6px; }
       .rest-ctrl button { flex:1; background:var(--surface2); border:1px solid var(--line); color:var(--text);
         padding:8px; border-radius:8px; display:flex; align-items:center; justify-content:center; cursor:pointer; }
+
+      /* REST POPUP OVERLAY (auto-appears when a set is checked) */
+      .rest-overlay { position:fixed; left:0; right:0; bottom:calc(98px + env(safe-area-inset-bottom));
+        display:flex; justify-content:center; padding:0 16px; z-index:8; pointer-events:none; }
+      .rest-overlay-card { pointer-events:auto; width:100%; max-width:400px; background:var(--surface);
+        border:1px solid var(--accent); border-radius:18px; padding:16px 18px 17px;
+        box-shadow:0 18px 50px rgba(0,0,0,.6); animation:restRise .22s ease; }
+      @keyframes restRise { from { transform:translateY(16px); opacity:0; } to { transform:none; opacity:1; } }
+      .rest-ov-label { display:flex; align-items:center; gap:6px; font-size:11px; letter-spacing:.12em;
+        text-transform:uppercase; color:var(--muted); }
+      .rest-ov-label svg { color:var(--accent); }
+      .rest-ov-time { font-family:'Space Mono',monospace; font-size:48px; font-weight:700; color:var(--accent);
+        text-align:center; line-height:1.05; margin:4px 0 8px; }
+      .rest-ov-track { height:6px; background:var(--surface2); border-radius:99px; overflow:hidden; margin-bottom:13px; }
+      .rest-ov-track > div { height:100%; background:var(--accent); border-radius:99px; transition:width .25s linear; }
+      .rest-ov-btns { display:flex; gap:9px; }
+      .rest-ov-btn { flex:1; padding:13px 6px; border-radius:12px; font-family:'Archivo'; font-weight:700; font-size:14px;
+        cursor:pointer; border:1px solid var(--line); background:var(--surface2); color:var(--text); }
+      .rest-ov-btn:active { transform:scale(.97); }
+      .rest-ov-btn.primary { background:var(--accent); color:#101200; border-color:var(--accent); }
+      .rest-ov-done { display:flex; align-items:center; justify-content:center; gap:8px; font-family:'Oswald';
+        font-weight:700; font-size:23px; color:var(--accent); margin:2px 0 14px; }
 
       /* MODAL */
       .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,.6); backdrop-filter:blur(3px); z-index:50;
