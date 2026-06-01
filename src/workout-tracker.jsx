@@ -1246,8 +1246,10 @@ function RestTimer({ autoSignal = 0 }) {
   const [auto, setAuto] = useState(true);
   const [muted, setMuted] = useState(false);
   const [duration, setDuration] = useState(90);
-  const ref = useRef(null);
+  const endRef = useRef(0);       // wall-clock ms when the current countdown ends
+  const tick = useRef(null);
   const audioRef = useRef(null);
+  const firedRef = useRef(false); // guard so the end alert fires exactly once
   const initial = useRef(autoSignal);
 
   const fireAlert = () => {
@@ -1275,36 +1277,76 @@ function RestTimer({ autoSignal = 0 }) {
     } catch {}
   };
 
-  // countdown tick
-  useEffect(() => {
-    if (running && remaining > 0) {
-      ref.current = setTimeout(() => setRemaining((r) => r - 1), 1000);
-    } else if (running && remaining === 0) {
-      fireAlert();          // rest is up — beep + buzz
+  // Drive the countdown from a target timestamp instead of decrementing a
+  // counter. Mobile browsers throttle/suspend JS timers when the screen locks or
+  // the app is backgrounded between sets, which made the old timer drift; reading
+  // Date.now() each tick keeps it correct and lets it "catch up" on resume.
+  const settle = () => {
+    const left = Math.max(0, Math.round((endRef.current - Date.now()) / 1000));
+    setRemaining(left);
+    if (left <= 0) {
       setRunning(false);
+      if (!firedRef.current) { firedRef.current = true; fireAlert(); }
     }
-    return () => ref.current && clearTimeout(ref.current);
-  }, [running, remaining]); // eslint-disable-line react-hooks/exhaustive-deps
+    return left;
+  };
+
+  useEffect(() => {
+    if (!running) return;
+    settle();
+    tick.current = setInterval(settle, 250);
+    return () => clearInterval(tick.current);
+  }, [running]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Recompute the moment we come back to the tab, so a rest that ended while the
+  // phone was locked alerts immediately rather than waiting for the next tick.
+  useEffect(() => {
+    const onVis = () => { if (document.visibilityState === "visible" && running) settle(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [running]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const begin = (secs) => {
+    firedRef.current = false;
+    endRef.current = Date.now() + secs * 1000;
+    setRemaining(secs);
+    setRunning(true);
+  };
+  const start = (s) => { setDuration(s); begin(s); setOpen(true); };
 
   // auto-start whenever a set is checked done
   useEffect(() => {
     if (autoSignal === initial.current) return; // skip first mount
     if (!auto) return;
-    setRemaining(duration);
-    setRunning(true);
+    begin(duration);
   }, [autoSignal]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const start = (s) => { setDuration(s); setRemaining(s); setRunning(true); setOpen(true); };
+  const togglePause = () => {
+    if (running) { settle(); setRunning(false); }            // freeze at current remaining
+    else if (remaining > 0) { firedRef.current = false; endRef.current = Date.now() + remaining * 1000; setRunning(true); }
+  };
+  // add/subtract time on the fly (e.g. need a few more seconds)
+  const adjust = (delta) => {
+    const base = running ? Math.max(0, Math.round((endRef.current - Date.now()) / 1000)) : remaining;
+    const next = Math.max(0, base + delta);
+    setRemaining(next);
+    if (running) { endRef.current = Date.now() + next * 1000; if (next > 0) firedRef.current = false; }
+  };
+  const skip = () => { setRunning(false); setRemaining(0); firedRef.current = true; };
+
   const mmss = `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}`;
+  const live = running || remaining > 0;          // a countdown is in progress (running or paused)
+  const pctLeft = duration ? Math.min(100, Math.max(0, (remaining / duration) * 100)) : 0;
 
   return (
     <div className="rest">
-      <button className={`icon-btn ${running ? "timer-on" : ""}`} onClick={() => setOpen((o) => !o)}>
-        {running ? <span className="timer-count">{mmss}</span> : <Timer size={20} />}
+      <button className={`icon-btn timer-btn ${live ? "timer-on" : ""} ${running ? "timer-live" : ""}`} onClick={() => setOpen((o) => !o)}>
+        {live ? <span className="timer-count">{mmss}</span> : <Timer size={20} />}
       </button>
       {open && (
         <div className="rest-pop">
           <div className="rest-big">{mmss}</div>
+          <div className="rest-track"><div className="rest-track-fill" style={{ width: `${pctLeft}%` }} /></div>
           <div className="rest-presets">
             {[60, 90, 120, 180].map((s) => (
               <button
@@ -1314,6 +1356,11 @@ function RestTimer({ autoSignal = 0 }) {
               >{s < 120 ? `${s}s` : `${s / 60}m`}</button>
             ))}
           </div>
+          <div className="rest-adjust">
+            <button onClick={() => adjust(-15)} disabled={!live}>−15s</button>
+            <button onClick={() => adjust(15)}>+15s</button>
+            <button onClick={skip} disabled={!live}>Skip</button>
+          </div>
           <button
             className={`auto-toggle ${auto ? "auto-on" : ""}`}
             onClick={() => setAuto((a) => !a)}
@@ -1321,10 +1368,10 @@ function RestTimer({ autoSignal = 0 }) {
             Auto-rest {auto ? "ON" : "OFF"} · {duration}s
           </button>
           <div className="rest-ctrl">
-            <button onClick={() => setRunning((r) => !r)} disabled={remaining === 0}>
+            <button onClick={togglePause} disabled={remaining === 0 && !running}>
               {running ? <Pause size={15} /> : <Play size={15} />}
             </button>
-            <button onClick={() => { setRemaining(0); setRunning(false); }}><RotateCcw size={15} /></button>
+            <button onClick={() => start(duration)} title="restart"><RotateCcw size={15} /></button>
             <button className={muted ? "" : "sound-on"} onClick={() => setMuted((m) => !m)} aria-label="toggle sound">
               {muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
             </button>
@@ -3068,11 +3115,16 @@ function FontsAndStyles() {
 
       /* SESSION */
       .session { min-height:100vh; display:flex; flex-direction:column; }
-      .session-head { display:flex; align-items:center; gap:10px; padding:calc(16px + env(safe-area-inset-top)) 14px 12px; border-bottom:1px solid var(--line); }
+      .session-head { position:sticky; top:0; z-index:6; display:flex; align-items:center; gap:10px;
+        padding:calc(16px + env(safe-area-inset-top)) 14px 12px; border-bottom:1px solid var(--line);
+        background:rgba(10,11,13,.92); backdrop-filter:blur(14px); }
       .icon-btn { background:var(--surface2); border:1px solid var(--line); color:var(--text); border-radius:11px;
         width:42px; height:42px; display:flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; }
       .icon-btn.timer-on { border-color:var(--accent); color:var(--accent); }
-      .timer-count { font-family:'Space Mono',monospace; font-size:13px; font-weight:700; }
+      .timer-btn { min-width:42px; width:auto; padding:0 10px; }
+      .timer-live { animation:timerpulse 1.6s ease-in-out infinite; }
+      @keyframes timerpulse { 0%,100%{ box-shadow:0 0 0 0 rgba(216,255,54,0); } 50%{ box-shadow:0 0 0 4px rgba(216,255,54,.12); } }
+      .timer-count { font-family:'Space Mono',monospace; font-size:15px; font-weight:700; letter-spacing:.02em; }
       .session-title { flex:1; display:flex; align-items:center; gap:10px; min-width:0; }
       .session-title h2 { font-size:18px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
       .session-title p { margin:1px 0 0; font-size:12px; color:var(--accent); }
@@ -3219,9 +3271,16 @@ function FontsAndStyles() {
 
       /* REST POPOVER */
       .rest { position:relative; }
-      .rest-pop { position:absolute; right:0; top:50px; width:200px; background:var(--surface); border:1px solid var(--line);
+      .rest-pop { position:absolute; right:0; top:52px; width:228px; background:var(--surface); border:1px solid var(--line);
         border-radius:14px; padding:13px; z-index:20; box-shadow:0 16px 40px rgba(0,0,0,.5); }
-      .rest-big { font-family:'Space Mono',monospace; font-size:30px; font-weight:700; text-align:center; color:var(--accent); }
+      .rest-big { font-family:'Space Mono',monospace; font-size:34px; font-weight:700; text-align:center; color:var(--accent); line-height:1.1; }
+      .rest-track { height:5px; background:var(--surface2); border-radius:99px; overflow:hidden; margin:8px 0 2px; }
+      .rest-track-fill { height:100%; background:var(--accent); border-radius:99px; transition:width .25s linear; }
+      .rest-adjust { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin:8px 0; }
+      .rest-adjust button { background:var(--surface2); border:1px solid var(--line); color:var(--text);
+        font-family:'Space Mono',monospace; font-size:12px; padding:8px 0; border-radius:8px; cursor:pointer; }
+      .rest-adjust button:active:not(:disabled) { background:var(--accent); color:#101200; }
+      .rest-adjust button:disabled { opacity:.4; }
       .rest-presets { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin:10px 0 8px; }
       .rest-presets button { background:var(--surface2); border:1px solid var(--line); color:var(--text);
         font-family:'Space Mono',monospace; font-size:12px; padding:7px 0; border-radius:8px; cursor:pointer; }
