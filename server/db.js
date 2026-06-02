@@ -125,6 +125,11 @@ if (!mealCols.includes("slot")) db.exec("ALTER TABLE meals ADD COLUMN slot TEXT 
 if (!mealCols.includes("grams")) db.exec("ALTER TABLE meals ADD COLUMN grams REAL");
 if (!mealCols.includes("base")) db.exec("ALTER TABLE meals ADD COLUMN base TEXT"); // JSON { per100g, servingG }
 
+// workouts: optional free-text note for the session (per-exercise notes live in
+// the exercises JSON blob and need no column)
+const workoutCols = db.prepare("PRAGMA table_info(workouts)").all().map((c) => c.name);
+if (!workoutCols.includes("note")) db.exec("ALTER TABLE workouts ADD COLUMN note TEXT");
+
 /* ----------------------------- mapping helpers --------------------------- */
 
 // Convert a DB row into the exact session shape the React frontend expects.
@@ -137,6 +142,7 @@ function rowToSession(row) {
     tag: row.tag,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
+    note: row.note || "",
     exercises: JSON.parse(row.exercises),
   };
 }
@@ -217,9 +223,9 @@ const _deleteWorkout = db.prepare(
 );
 const _upsertWorkout = db.prepare(`
   INSERT INTO workouts
-    (user_id, client_id, day_key, day_name, focus, tag, started_at, finished_at, exercises, created_at)
+    (user_id, client_id, day_key, day_name, focus, tag, started_at, finished_at, note, exercises, created_at)
   VALUES
-    (@user_id, @client_id, @day_key, @day_name, @focus, @tag, @started_at, @finished_at, @exercises, @created_at)
+    (@user_id, @client_id, @day_key, @day_name, @focus, @tag, @started_at, @finished_at, @note, @exercises, @created_at)
   ON CONFLICT (user_id, client_id) DO UPDATE SET
     day_key     = excluded.day_key,
     day_name    = excluded.day_name,
@@ -227,6 +233,7 @@ const _upsertWorkout = db.prepare(`
     tag         = excluded.tag,
     started_at  = excluded.started_at,
     finished_at = excluded.finished_at,
+    note        = excluded.note,
     exercises   = excluded.exercises
 `);
 const _getWorkout = db.prepare(
@@ -250,6 +257,7 @@ export function upsertWorkout(userId, session) {
     tag: session.tag ?? null,
     started_at: session.startedAt ?? null,
     finished_at: session.finishedAt ?? null,
+    note: session.note ? String(session.note).slice(0, 1000) : null,
     exercises: JSON.stringify(Array.isArray(session.exercises) ? session.exercises : []),
     created_at: Date.now(),
   });

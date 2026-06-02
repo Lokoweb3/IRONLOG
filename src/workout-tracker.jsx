@@ -105,19 +105,21 @@ const fmtDateTime = (ts) =>
   new Date(ts).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
 // Build a live session from a program `day` object (from the user's program).
-function buildSession(day) {
+function buildSession(day, startedAt = Date.now()) {
   return {
     id: uid(),
     dayKey: day.key,
     dayName: day.name,
     focus: day.focus,
     tag: day.tag,
-    startedAt: Date.now(),
+    startedAt,
+    note: "",
     exercises: day.exercises.map((ex) => ({
       key: uid(),
       name: ex.name,
       variations: ex.variations || [],
       variation: (ex.variations && ex.variations[0]) || null,
+      note: "",
       sets: Array.from({ length: Math.max(1, Number(ex.sets) || 1) }, () => ({ w: "", r: "", done: false })),
     })),
   };
@@ -395,7 +397,7 @@ export default function App() {
     }
   };
 
-  const startWorkout = (day) => setActive(buildSession(day));
+  const startWorkout = (day, startedAt) => setActive(buildSession(day, startedAt));
   const cancelWorkout = () => { setActive(null); if (user) clearActiveDraft(user.id); };
   // Re-open a finished workout in the editor to fix sets/reps/weights/date.
   const editWorkout = (session) => { setActive({ ...structuredClone(session), _editing: true }); };
@@ -404,8 +406,12 @@ export default function App() {
     const editing = !!active._editing;
     const cleaned = {
       ...active,
-      // keep the original finish time when editing; stamp it for a fresh session
-      finishedAt: active.finishedAt || Date.now(),
+      // keep the original finish time when editing; for a backdated (missed)
+      // session finish ~45 min after the start; otherwise stamp it now
+      finishedAt: active.finishedAt ||
+        (active.startedAt && active.startedAt < Date.now() - 6 * 3600000
+          ? active.startedAt + 45 * 60000
+          : Date.now()),
       exercises: active.exercises
         .map((ex) => ({ ...ex, sets: ex.sets.filter(isLogged) }))
         .filter((ex) => ex.sets.length > 0),
@@ -810,11 +816,25 @@ function Onboarding({ user, profile, onSaveProfile, onUseDefault, onBuildOwn }) 
 /*  TRAIN VIEW                                                         */
 /* ================================================================== */
 function TrainView({ sessions, program, onStart, onEditProgram }) {
+  const [pastOpen, setPastOpen] = useState(false);
+  const [pastDate, setPastDate] = useState(() => localDayStr());
+  const [pastDayKey, setPastDayKey] = useState("");
+
   const lastByDay = {};
   for (const s of sessions) {
     if (!lastByDay[s.dayKey] || s.startedAt > lastByDay[s.dayKey]) lastByDay[s.dayKey] = s.startedAt;
   }
   const days = program || [];
+
+  // Start logging a session for a past date (a workout you forgot to log).
+  const startPast = () => {
+    const day = days.find((d) => d.key === pastDayKey) || days[0];
+    if (!day) return;
+    const [y, m, d] = pastDate.split("-").map(Number);
+    const ts = new Date(y, m - 1, d, 12, 0, 0).getTime();
+    setPastOpen(false);
+    onStart(day, ts);
+  };
 
   if (!days.length) {
     return (
@@ -856,9 +876,34 @@ function TrainView({ sessions, program, onStart, onEditProgram }) {
           </button>
         ))}
       </div>
+
+      <button className="log-past-btn" onClick={() => { setPastDayKey(days[0]?.key || ""); setPastOpen(true); }}>
+        <CalendarDays size={15} /> Log a past workout
+      </button>
+
       <p className="footnote">
         Your program and history sync to your account. Pick your equipment variation while logging each lift.
       </p>
+
+      {pastOpen && (
+        <div className="modal-bg" onClick={() => setPastOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>Log a past workout</h3>
+            <p style={{ margin: "8px 0 14px" }}>Pick the day it happened and which session, then fill in your sets.</p>
+            <label className="field-label">Date</label>
+            <input className="login-input" type="date" max={localDayStr()} value={pastDate}
+              onChange={(e) => setPastDate(e.target.value)} />
+            <label className="field-label" style={{ marginTop: 12 }}>Session</label>
+            <select className="login-input" value={pastDayKey} onChange={(e) => setPastDayKey(e.target.value)}>
+              {days.map((d) => <option key={d.key} value={d.key}>{d.name}</option>)}
+            </select>
+            <div className="modal-btns" style={{ marginTop: 18 }}>
+              <button className="btn-ghost" onClick={() => setPastOpen(false)}>Cancel</button>
+              <button className="login-go" style={{ flex: 1, margin: 0 }} onClick={startPast}>Start logging</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1037,6 +1082,8 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
     const ex = s.exercises.find((e) => e.key === exKey); ex.sets.splice(idx, 1);
   });
   const setDate = (val) => update((s) => { if (val) s.startedAt = localInputToTs(val); });
+  const setNote = (val) => update((s) => { s.note = val; });
+  const setExNote = (exKey, val) => update((s) => { const ex = s.exercises.find((e) => e.key === exKey); ex.note = val; });
 
   const totalSets = active.exercises.reduce((n, e) => n + e.sets.length, 0);
   const doneSets = active.exercises.reduce((n, e) => n + e.sets.filter((x) => x.done).length, 0);
@@ -1072,6 +1119,15 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
             onChange={(e) => setDate(e.target.value)}
           />
         </label>
+      </div>
+
+      <div className="note-row">
+        <textarea
+          className="session-note" rows={2}
+          placeholder="Session notes — how it felt, energy, injuries…"
+          value={active.note || ""}
+          onChange={(e) => setNote(e.target.value)}
+        />
       </div>
 
       <main className="session-body">
@@ -1153,6 +1209,13 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
               <button className="add-set" onClick={() => addSet(ex.key)}>
                 <Plus size={15} /> Add set
               </button>
+
+              <input
+                className="ex-note"
+                placeholder="＋ note (form cue, pain, tempo…)"
+                value={ex.note || ""}
+                onChange={(e) => setExNote(ex.key, e.target.value)}
+              />
             </div>
           );
         })}
@@ -1564,6 +1627,7 @@ function HistoryView({ sessions, onDelete, onEdit, onImport }) {
             </button>
             {open && (
               <div className="hist-body">
+                {s.note && <div className="hist-note"><BookOpen size={13} /> {s.note}</div>}
                 {s.exercises.map((ex, i) => {
                   const rests = ex.sets.map((st) => st.restBefore).filter((r) => r != null);
                   const avgRest = rests.length ? Math.round(rests.reduce((a, b) => a + b, 0) / rests.length) : null;
@@ -1584,6 +1648,7 @@ function HistoryView({ sessions, onDelete, onEdit, onImport }) {
                         {top1rm > 0 && <span>est 1RM {top1rm} lbs</span>}
                         {avgRest != null && <span><Timer size={11} /> avg rest {fmtRest(avgRest)}</span>}
                       </div>
+                      {ex.note && <div className="hist-ex-note">“{ex.note}”</div>}
                     </div>
                   );
                 })}
@@ -3343,6 +3408,29 @@ function FontsAndStyles() {
         font-family:'Archivo'; font-weight:600; font-size:13px; padding:10px; border-radius:10px; cursor:pointer;
         display:flex; align-items:center; justify-content:center; gap:6px; transition:all .15s; }
       .add-set:active { border-color:var(--accent); color:var(--accent); }
+
+      /* NOTES (session + per-exercise) */
+      .note-row { padding:0 18px 6px; }
+      .session-note { width:100%; background:var(--surface2); border:1px solid var(--line); color:var(--text);
+        font-family:'Archivo'; font-size:14px; line-height:1.45; padding:11px 13px; border-radius:11px; resize:vertical;
+        min-height:46px; }
+      .session-note::placeholder { color:var(--muted); }
+      .session-note:focus { outline:none; border-color:var(--accent); }
+      .ex-note { width:100%; margin-top:6px; background:none; border:1px dashed var(--line); color:var(--text);
+        font-family:'Archivo'; font-size:13px; padding:10px; border-radius:10px; }
+      .ex-note::placeholder { color:var(--muted); }
+      .ex-note:focus { outline:none; border-style:solid; border-color:var(--accent); }
+      .hist-note { display:flex; align-items:flex-start; gap:7px; background:var(--surface2); border:1px solid var(--line);
+        border-radius:10px; padding:9px 11px; font-size:13px; line-height:1.45; color:var(--text); margin-bottom:12px; }
+      .hist-note svg { color:var(--accent); flex-shrink:0; margin-top:2px; }
+      .hist-ex-note { margin-top:5px; font-size:12.5px; font-style:italic; color:var(--muted); line-height:1.4; }
+
+      /* LOG A PAST WORKOUT */
+      .log-past-btn { width:100%; display:flex; align-items:center; justify-content:center; gap:8px; margin-top:14px;
+        background:var(--surface); border:1px solid var(--line); color:var(--text); font-family:'Archivo'; font-weight:600;
+        font-size:13.5px; padding:13px; border-radius:12px; cursor:pointer; }
+      .log-past-btn:active { border-color:var(--accent); color:var(--accent); }
+      .log-past-btn svg { color:var(--accent); }
 
       .finish-bar { position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100%; max-width:560px;
         padding:14px 16px calc(16px + env(safe-area-inset-bottom)); background:linear-gradient(transparent, var(--bg) 30%); z-index:4; }

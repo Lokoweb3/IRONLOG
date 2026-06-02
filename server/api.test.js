@@ -68,6 +68,15 @@ describe("workouts", () => {
     assert.equal(list.length, 1); // still one row
     assert.equal(list[0].exercises[0].sets[0].w, "135"); // updated value
   });
+  test("session + exercise notes round-trip", async () => {
+    const c = cookieFor(newUser("wo4").id);
+    const s = { id: "n1", dayKey: "d", note: "felt strong, left knee twinge",
+      exercises: [{ key: "k", name: "Squat", note: "pause at bottom", sets: [{ w: "225", r: "5", done: true }] }] };
+    await request(app).post("/workouts").set("Cookie", c).send(s).expect(201);
+    const got = (await request(app).get("/workouts").set("Cookie", c)).body[0];
+    assert.equal(got.note, "felt strong, left knee twinge");
+    assert.equal(got.exercises[0].note, "pause at bottom");
+  });
   test("cannot delete another user's workout", async () => {
     const a = cookieFor(newUser("wa").id);
     const b = cookieFor(newUser("wb").id);
