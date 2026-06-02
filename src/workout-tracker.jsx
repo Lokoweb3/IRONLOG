@@ -3003,6 +3003,12 @@ function FontsAndStyles() {
       @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Archivo:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
 
       * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+      /* Theme vars on :root too, so portaled UI (the rest popup) inherits them
+         even though it renders outside .wt-root on document.body. */
+      :root {
+        --bg:#0a0b0d; --surface:#15171b; --surface2:#1d2025; --line:#2a2e36;
+        --text:#f2f4f5; --muted:#8b9199; --accent:#d8ff36; --danger:#ff5a4d;
+      }
       .wt-root {
         --bg:#0a0b0d; --surface:#15171b; --surface2:#1d2025; --line:#2a2e36;
         --text:#f2f4f5; --muted:#8b9199; --accent:#d8ff36; --danger:#ff5a4d;
