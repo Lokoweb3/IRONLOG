@@ -397,24 +397,32 @@ export default function App() {
 
   const startWorkout = (day) => setActive(buildSession(day));
   const cancelWorkout = () => { setActive(null); if (user) clearActiveDraft(user.id); };
+  // Re-open a finished workout in the editor to fix sets/reps/weights/date.
+  const editWorkout = (session) => { setActive({ ...structuredClone(session), _editing: true }); };
 
   const finishWorkout = async () => {
+    const editing = !!active._editing;
     const cleaned = {
       ...active,
-      finishedAt: Date.now(),
+      // keep the original finish time when editing; stamp it for a fresh session
+      finishedAt: active.finishedAt || Date.now(),
       exercises: active.exercises
         .map((ex) => ({ ...ex, sets: ex.sets.filter(isLogged) }))
         .filter((ex) => ex.sets.length > 0),
     };
+    delete cleaned._editing;
     if (cleaned.exercises.length === 0) { cancelWorkout(); return; }
-    // optimistic: show it immediately, clear the draft, then sync to the server
-    setSessions((prev) => [...prev, cleaned]);
+    // optimistic: update in place if editing, else append; clear draft, then sync
+    const exists = sessions.some((s) => s.id === cleaned.id);
+    setSessions((prev) => (editing || exists)
+      ? prev.map((s) => (s.id === cleaned.id ? cleaned : s))
+      : [...prev, cleaned]);
     if (user) clearActiveDraft(user.id);
     setActive(null);
     setView("history");
     setSyncError("");
     try {
-      await api.createWorkout(cleaned);
+      await api.createWorkout(cleaned); // server upserts by client id (edit or new)
     } catch {
       setSyncError("Couldn't save to the server — it'll stay until you retry or reload.");
     }
@@ -512,7 +520,7 @@ export default function App() {
             {view === "train" && <TrainView sessions={sessions} program={program} onStart={startWorkout} onEditProgram={() => setView("program")} />}
             {view === "meal" && <MealView profile={profile} sessions={sessions} onGoProfile={() => setView("profile")} />}
             {view === "calendar" && <CalendarView sessions={sessions} program={program} />}
-            {view === "history" && <HistoryView sessions={sessions} onDelete={deleteSession} onImport={importSessions} />}
+            {view === "history" && <HistoryView sessions={sessions} onDelete={deleteSession} onEdit={editWorkout} onImport={importSessions} />}
             {view === "progress" && <ProgressView sessions={sessions} />}
             {view === "program" && <ProgramView program={program} onChange={updateProgram} onReset={resetProgram} />}
             {view === "profile" && <ProfileView profile={profile} onSave={saveProfile} onBack={() => setView("train")} onLogout={logout} onRestartOnboarding={restartOnboarding} />}
@@ -988,6 +996,7 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [restSignal, setRestSignal] = useState(0);
   const [help, setHelp] = useState(null); // { name, variation } for the form-guide modal
+  const editing = !!active._editing; // re-opened from History to fix a past workout
 
   const update = (mut) => setActive((prev) => {
     const copy = structuredClone(prev);
@@ -1152,17 +1161,17 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
 
       <div className="finish-bar">
         <button className="finish-btn" onClick={onFinish}>
-          Finish & Save Workout
+          {editing ? "Save Changes" : "Finish & Save Workout"}
         </button>
       </div>
 
       {confirmCancel && (
         <div className="modal-bg" onClick={() => setConfirmCancel(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Leave this workout?</h3>
-            <p>Your progress so far won't be saved to history.</p>
+            <h3>{editing ? "Discard changes?" : "Leave this workout?"}</h3>
+            <p>{editing ? "Your edits won't be saved — the workout stays as it was." : "Your progress so far won't be saved to history."}</p>
             <div className="modal-btns">
-              <button className="btn-ghost" onClick={() => setConfirmCancel(false)}>Keep training</button>
+              <button className="btn-ghost" onClick={() => setConfirmCancel(false)}>{editing ? "Keep editing" : "Keep training"}</button>
               <button className="btn-danger" onClick={onCancel}>Discard</button>
             </div>
           </div>
@@ -1423,7 +1432,7 @@ function RestTimer({ autoSignal = 0 }) {
 /* ================================================================== */
 /*  HISTORY VIEW                                                       */
 /* ================================================================== */
-function HistoryView({ sessions, onDelete, onImport }) {
+function HistoryView({ sessions, onDelete, onEdit, onImport }) {
   const [openId, setOpenId] = useState(null);
   const [msg, setMsg] = useState(null);
   const fileRef = useRef(null);
@@ -1553,6 +1562,9 @@ function HistoryView({ sessions, onDelete, onImport }) {
                   );
                 })}
                 <div className="hist-actions">
+                  <button className="hist-edit" onClick={() => onEdit(s)}>
+                    <Pencil size={14} /> Edit
+                  </button>
                   <button className="hist-share" onClick={() => shareWorkoutCard(s, shareStats)}>
                     <Share2 size={14} /> Share
                   </button>
@@ -3374,6 +3386,10 @@ function FontsAndStyles() {
         display:flex; align-items:center; justify-content:center; gap:6px; }
       .btn-danger.sm { flex:none; margin-top:12px; padding:9px 14px; font-size:13px; }
       .hist-actions { display:flex; gap:10px; margin-top:12px; }
+      .hist-edit { display:flex; align-items:center; gap:6px; background:var(--surface2); color:var(--text);
+        border:1px solid var(--line); border-radius:11px; font-family:'Archivo'; font-weight:700; font-size:13px;
+        padding:9px 16px; cursor:pointer; }
+      .hist-edit:active { transform:scale(.98); border-color:var(--accent); color:var(--accent); }
       .hist-share { display:flex; align-items:center; gap:6px; background:var(--accent); color:#101200; border:none;
         border-radius:11px; font-family:'Archivo'; font-weight:700; font-size:13px; padding:9px 16px; cursor:pointer; }
       .hist-share:active { transform:scale(.98); }

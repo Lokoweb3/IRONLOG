@@ -57,6 +57,17 @@ describe("workouts", () => {
     const c = cookieFor(newUser("wo2").id);
     await request(app).post("/workouts").set("Cookie", c).send({ nope: true }).expect(400);
   });
+  test("re-saving an edited workout updates in place (no duplicate)", async () => {
+    const c = cookieFor(newUser("wo3").id);
+    const base = { id: "e1", dayKey: "d", dayName: "Push", tag: "P", startedAt: 1, finishedAt: 2, exercises: [{ key: "k", name: "Bench", sets: [{ w: "100", r: "5", done: true }] }] };
+    await request(app).post("/workouts").set("Cookie", c).send(base).expect(201);
+    // edit: fix the weight, keep the same id
+    const edited = { ...base, exercises: [{ key: "k", name: "Bench", sets: [{ w: "135", r: "5", done: true }] }] };
+    await request(app).post("/workouts").set("Cookie", c).send(edited).expect(201);
+    const list = (await request(app).get("/workouts").set("Cookie", c)).body;
+    assert.equal(list.length, 1); // still one row
+    assert.equal(list[0].exercises[0].sets[0].w, "135"); // updated value
+  });
   test("cannot delete another user's workout", async () => {
     const a = cookieFor(newUser("wa").id);
     const b = cookieFor(newUser("wb").id);
