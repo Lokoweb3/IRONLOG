@@ -1249,14 +1249,25 @@ function ExerciseHelp({ name, variation, onClose }) {
 }
 
 /* ------------------------------- REST TIMER ----------------------- */
+const REST_PREFS_KEY = "ironlog.restPrefs";
+const loadRestPrefs = () => { try { return JSON.parse(localStorage.getItem(REST_PREFS_KEY)) || {}; } catch { return {}; } };
+const clampRest = (s) => Math.min(3600, Math.max(5, Math.round(s) || 0));
+
 function RestTimer({ autoSignal = 0 }) {
+  const prefs = useRef(loadRestPrefs());
   const [open, setOpen] = useState(false);
   const [remaining, setRemaining] = useState(0);
   const [running, setRunning] = useState(false);
-  const [auto, setAuto] = useState(true);
-  const [muted, setMuted] = useState(false);
-  const [duration, setDuration] = useState(90);
+  const [auto, setAuto] = useState(prefs.current.auto ?? true);
+  const [muted, setMuted] = useState(prefs.current.muted ?? false);
+  const [duration, setDuration] = useState(prefs.current.duration || 90);
+  const [customStr, setCustomStr] = useState("");
   const [overlay, setOverlay] = useState("hidden"); // 'hidden' | 'running' | 'done' — the on-screen popup
+
+  // remember the chosen rest length + auto/mute across workouts (this device)
+  useEffect(() => {
+    try { localStorage.setItem(REST_PREFS_KEY, JSON.stringify({ duration, auto, muted })); } catch {}
+  }, [duration, auto, muted]);
   const endRef = useRef(0);       // wall-clock ms when the current countdown ends
   const tick = useRef(null);
   const audioRef = useRef(null);
@@ -1326,6 +1337,13 @@ function RestTimer({ autoSignal = 0 }) {
     setOverlay("running"); // show the on-screen popup
   };
   const start = (s) => { setDuration(s); begin(s); setOpen(false); };
+  // apply a typed custom rest length: becomes the new default + starts now
+  const applyCustom = () => {
+    const s = clampRest(parseInt(customStr, 10));
+    if (!s) return;
+    setCustomStr("");
+    start(s);
+  };
 
   // auto-dismiss the "rest complete" popup a few seconds after it ends
   useEffect(() => {
@@ -1376,6 +1394,14 @@ function RestTimer({ autoSignal = 0 }) {
                 onClick={() => start(s)}
               >{s < 120 ? `${s}s` : `${s / 60}m`}</button>
             ))}
+          </div>
+          <div className="rest-custom">
+            <input className="rest-custom-input" inputMode="numeric" placeholder={`${duration}s — custom`}
+              value={customStr}
+              onChange={(e) => setCustomStr(e.target.value.replace(/[^\d]/g, ""))}
+              onKeyDown={(e) => e.key === "Enter" && applyCustom()} />
+            <span className="rest-custom-unit">sec</span>
+            <button className="rest-custom-set" onClick={applyCustom} disabled={!customStr}>Set</button>
           </div>
           <div className="rest-adjust">
             <button onClick={() => adjust(-15)} disabled={!live}>−15s</button>
@@ -3337,6 +3363,15 @@ function FontsAndStyles() {
         font-family:'Space Mono',monospace; font-size:12px; padding:8px 0; border-radius:8px; cursor:pointer; }
       .rest-adjust button:active:not(:disabled) { background:var(--accent); color:#101200; }
       .rest-adjust button:disabled { opacity:.4; }
+      .rest-custom { display:flex; align-items:center; gap:6px; margin:0 0 8px; }
+      .rest-custom-input { flex:1; min-width:0; background:var(--surface2); border:1px solid var(--line); color:var(--text);
+        font-family:'Space Mono',monospace; font-size:13px; text-align:center; padding:8px 6px; border-radius:8px; }
+      .rest-custom-input::placeholder { color:var(--muted); font-size:11px; }
+      .rest-custom-unit { font-size:11px; color:var(--muted); font-family:'Space Mono',monospace; }
+      .rest-custom-set { background:var(--surface2); border:1px solid var(--line); color:var(--text);
+        font-family:'Archivo'; font-weight:700; font-size:12px; padding:8px 13px; border-radius:8px; cursor:pointer; }
+      .rest-custom-set:active:not(:disabled) { background:var(--accent); color:#101200; }
+      .rest-custom-set:disabled { opacity:.4; }
       .rest-presets { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin:10px 0 8px; }
       .rest-presets button { background:var(--surface2); border:1px solid var(--line); color:var(--text);
         font-family:'Space Mono',monospace; font-size:12px; padding:7px 0; border-radius:8px; cursor:pointer; }
