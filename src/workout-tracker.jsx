@@ -5,10 +5,11 @@ import {
   ChevronLeft, Trash2, Flame, ChevronDown, ChevronRight, ChevronUp, Play, Pause, RotateCcw,
   CalendarDays, Volume2, VolumeX, Trophy, Download, Upload,
   LogOut, ListChecks, Pencil, UtensilsCrossed, Search, Target, Scale, ScanLine, Camera, Flashlight, Star, PlayCircle,
-  Copy, Save, BookOpen, Share2, Disc
+  Copy, Save, BookOpen, Share2, Disc, WifiOff
 } from "lucide-react";
 import { api } from "./api.js";
 import { e1rm, bestSetE1rm, historicalBestE1rm } from "./lib/stats.js";
+import { loadOutbox, queueWorkout, removeFromOutbox, flushOutbox } from "./lib/outbox.js";
 import PlateCalc from "./PlateCalc.jsx";
 
 // recharts is heavy and only used on Progress/Profile — load it as a separate
@@ -244,6 +245,7 @@ export default function App() {
   const [booting, setBooting] = useState(true);    // resolving the current session
   const [dataLoading, setDataLoading] = useState(false); // loading workouts from API
   const [syncError, setSyncError] = useState("");
+  const [pendingSync, setPendingSync] = useState(0);   // workouts queued offline, waiting to upload
   const [updateReady, setUpdateReady] = useState(false); // a newer build has deployed
 
   // boot: ask the server who we are (reads the session cookie)
@@ -282,17 +284,26 @@ export default function App() {
 
   // load the signed-in user's workouts + program whenever the user changes
   useEffect(() => {
-    if (!user) { setSessions([]); setProgram([]); setProfile(null); setActive(null); return; }
+    if (!user) { setSessions([]); setProgram([]); setProfile(null); setActive(null); setPendingSync(0); return; }
     setDataLoading(true);
     (async () => {
       try {
+        // push anything logged offline last time FIRST, so the fetch below
+        // already includes it; whatever still fails stays queued
+        await flushOutbox(user.id, (sess) => api.createWorkout(sess));
         const [s, prog, prof] = await Promise.all([api.getWorkouts(), api.getProgram(), api.getProfile()]);
-        setSessions(Array.isArray(s) ? s : []);
+        const list = Array.isArray(s) ? s : [];
+        const box = loadOutbox(user.id); // still-unsynced sessions belong in history too
+        setSessions(box.length ? [...list.filter((x) => !box.some((b) => b.id === x.id)), ...box] : list);
+        setPendingSync(box.length);
         setProgram(Array.isArray(prog?.days) ? prog.days : []);
         setOnboarded(!!prog?.onboarded);
         setProfile(prof || null);
       } catch {
-        setSessions([]);
+        // fully offline: at least surface what's queued on this device
+        const box = loadOutbox(user.id);
+        setSessions(box);
+        setPendingSync(box.length);
         setProgram([]);
         setOnboarded(true); // don't trap the user on the choice screen if the load failed
       }
@@ -301,6 +312,19 @@ export default function App() {
       setDataLoading(false);
     })();
   }, [user]);
+
+  // retry queued workouts the moment the connection comes back (or on tap)
+  const syncOutbox = useCallback(async () => {
+    if (!user) return;
+    const { sent, pending } = await flushOutbox(user.id, (sess) => api.createWorkout(sess));
+    setPendingSync(pending);
+    if (sent > 0) setSyncError("");
+  }, [user]);
+  useEffect(() => {
+    if (!user) return;
+    window.addEventListener("online", syncOutbox);
+    return () => window.removeEventListener("online", syncOutbox);
+  }, [user, syncOutbox]);
 
   // debounced persistence of the in-progress draft (local only, per user)
   const activeTimer = useRef(null);
@@ -412,17 +436,22 @@ export default function App() {
     setSyncError("");
     try {
       await api.createWorkout(cleaned); // server upserts by client id (edit or new)
+      syncOutbox();                     // let any older queued workouts ride along
     } catch {
-      setSyncError("Couldn't save to the server — it'll stay until you retry or reload.");
+      // offline / server hiccup: queue it durably and upload later — nothing is lost
+      if (user) setPendingSync(queueWorkout(user.id, cleaned));
+      else setSyncError("Couldn't save to the server — it'll stay until you retry or reload.");
     }
   };
 
   const deleteSession = async (id) => {
     const prev = sessions;
     setSessions(prev.filter((s) => s.id !== id)); // optimistic
+    if (user) setPendingSync(removeFromOutbox(user.id, id)); // if it was queued, forget it
     try {
       await api.deleteWorkout(id);
-    } catch {
+    } catch (e) {
+      if (e?.status === 404) return; // it never reached the server — nothing to delete there
       setSessions(prev); // roll back on failure
       setSyncError("Couldn't delete that workout — please try again.");
     }
@@ -510,6 +539,12 @@ export default function App() {
           </header>
 
           {syncError && <div className="sync-error" onClick={() => setSyncError("")}>{syncError}</div>}
+          {pendingSync > 0 && (
+            <div className="sync-pending" onClick={syncOutbox} role="button" title="Tap to retry now">
+              <WifiOff size={13} /> {pendingSync} workout{pendingSync > 1 ? "s" : ""} saved on this device — will
+              upload when you're back online. Tap to retry.
+            </div>
+          )}
 
           <main className="content">
             {view === "train" && <TrainView sessions={sessions} program={program} onStart={startWorkout} onEditProgram={() => setView("program")} />}
@@ -1056,6 +1091,28 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
   const [help, setHelp] = useState(null); // { name, variation } for the form-guide modal
   const [plateTarget, setPlateTarget] = useState(null); // pre-fill weight for the plate calc sheet
   const editing = !!active._editing; // re-opened from History to fix a past workout
+
+  // Keep the screen awake during a workout — phones otherwise lock mid-set.
+  // Re-acquire when the tab becomes visible again (the OS silently releases
+  // the lock on background); no-op where the API isn't supported.
+  useEffect(() => {
+    let lock = null, alive = true;
+    const acquire = async () => {
+      try {
+        if (alive && navigator.wakeLock && document.visibilityState === "visible") {
+          lock = await navigator.wakeLock.request("screen");
+        }
+      } catch { /* low battery / unsupported — not worth surfacing */ }
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") acquire(); };
+    acquire();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      alive = false;
+      document.removeEventListener("visibilitychange", onVisible);
+      try { lock?.release(); } catch {}
+    };
+  }, []);
 
   const update = (mut) => setActive((prev) => {
     const copy = structuredClone(prev);
@@ -3191,6 +3248,10 @@ function FontsAndStyles() {
       .sync-error { margin:0 16px; padding:10px 13px; background:rgba(255,90,77,.12);
         border:1px solid var(--danger); border-radius:10px; color:var(--danger); font-size:12.5px;
         font-family:'Archivo'; cursor:pointer; }
+      .sync-pending { margin:0 16px 6px; padding:10px 13px; background:rgba(255,177,62,.1);
+        border:1px solid rgba(255,177,62,.4); border-radius:10px; color:#ffb13e; font-size:12.5px;
+        font-family:'Archivo'; cursor:pointer; display:flex; align-items:center; gap:8px; line-height:1.4; }
+      .sync-pending svg { flex-shrink:0; }
 
       .update-banner { position:sticky; top:0; z-index:30; width:100%; display:flex; align-items:center;
         justify-content:center; gap:8px; background:var(--accent); color:#101200; border:none;

@@ -9,7 +9,13 @@ installable as a PWA.
 landing page for a throwaway account pre-loaded with a month of realistic training data
 (it resets after 24 hours). No Google account needed.
 
-<!-- TODO: screenshots — landing page, live session with rest timer, meals day view, progress charts -->
+<p align="center">
+  <img src="docs/screenshots/train.jpg" width="19%" alt="Train — choose today's session" />
+  <img src="docs/screenshots/session.jpg" width="19%" alt="Live workout session" />
+  <img src="docs/screenshots/plates.jpg" width="19%" alt="Plate calculator" />
+  <img src="docs/screenshots/meals.jpg" width="19%" alt="Meals — calories & macros" />
+  <img src="docs/screenshots/progress.jpg" width="19%" alt="Progress — 1RM trend" />
+</p>
 
 Deployed on Fly.io with continuous backups and CI/CD. MIT-licensed ([LICENSE](LICENSE)).
 
