@@ -1209,12 +1209,14 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
                     <div className={`set-row ${st.done ? "set-done" : ""}`}>
                       <span className="set-idx">{si + 1}</span>
                       <input
-                        className="set-input" inputMode="decimal" placeholder="lbs"
+                        className="set-input" inputMode="decimal" placeholder="lbs" enterKeyHint="done"
                         value={st.w} onChange={(e) => setField(ex.key, si, "w", e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
                       />
                       <input
-                        className="set-input" inputMode="numeric" placeholder="reps"
+                        className="set-input" inputMode="numeric" placeholder="reps" enterKeyHint="done"
                         value={st.r} onChange={(e) => setField(ex.key, si, "r", e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
                       />
                       <div className="set-actions">
                         <button
@@ -3134,6 +3136,13 @@ function FontsAndStyles() {
       @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Archivo:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
 
       * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+      /* Mobile: stable text size on rotation; no pull-to-refresh mid-workout;
+         instant taps (no double-tap-zoom wait) and no accidental long-press
+         text selection on controls. */
+      html { -webkit-text-size-adjust:100%; text-size-adjust:100%; }
+      html, body { overscroll-behavior-y:none; }
+      button, select, input, textarea { touch-action:manipulation; }
+      button { -webkit-user-select:none; user-select:none; }
       /* Theme vars on :root too, so portaled UI (the rest popup) inherits them
          even though it renders outside .wt-root on document.body. */
       :root {
@@ -3143,7 +3152,7 @@ function FontsAndStyles() {
       .wt-root {
         --bg:#0a0b0d; --surface:#15171b; --surface2:#1d2025; --line:#2a2e36;
         --text:#f2f4f5; --muted:#8b9199; --accent:#d8ff36; --danger:#ff5a4d;
-        position:relative; min-height:100vh; background:
+        position:relative; min-height:100vh; min-height:100dvh; background:
           radial-gradient(900px 500px at 90% -10%, rgba(216,255,54,.06), transparent 60%),
           radial-gradient(700px 500px at -10% 110%, rgba(216,255,54,.04), transparent 60%),
           var(--bg);
@@ -3157,7 +3166,7 @@ function FontsAndStyles() {
 
       h1,h2,h3 { margin:0; font-family:'Oswald',sans-serif; letter-spacing:.02em; }
       .loader { display:flex; flex-direction:column; align-items:center; justify-content:center;
-        min-height:100vh; gap:14px; color:var(--muted); }
+        min-height:100vh; min-height:100dvh; gap:14px; color:var(--muted); }
       .loader svg { color:var(--accent); animation:pulse 1.4s ease-in-out infinite; }
       @keyframes pulse { 0%,100%{opacity:.4; transform:scale(.95)} 50%{opacity:1; transform:scale(1.05)} }
 
@@ -3194,7 +3203,7 @@ function FontsAndStyles() {
         font-family:'Archivo'; font-size:12px; font-weight:600; padding:7px 14px; }
 
       /* LOGIN */
-      .login { min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center;
+      .login { min-height:100vh; min-height:100dvh; display:flex; flex-direction:column; align-items:center; justify-content:center;
         padding:calc(30px + env(safe-area-inset-top)) 24px calc(30px + env(safe-area-inset-bottom)); max-width:460px; margin:0 auto; }
       .login-brand { text-align:center; margin-bottom:34px; }
       .login-brand h1 { font-size:42px; font-weight:700; margin-top:6px; }
@@ -3300,7 +3309,7 @@ function FontsAndStyles() {
       .tab-on { color:var(--accent); background:rgba(216,255,54,.08); }
 
       /* SESSION */
-      .session { min-height:100vh; display:flex; flex-direction:column; }
+      .session { min-height:100vh; min-height:100dvh; display:flex; flex-direction:column; }
       .session-head { position:sticky; top:0; z-index:6; display:flex; align-items:center; gap:10px;
         padding:calc(16px + env(safe-area-inset-top)) 14px 12px; border-bottom:1px solid var(--line);
         background:rgba(10,11,13,.92); backdrop-filter:blur(14px); }
@@ -3850,6 +3859,21 @@ function FontsAndStyles() {
       .fade-in { animation:fade .4s ease; }
       @keyframes fade { from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none} }
       @keyframes rise { from{opacity:0; transform:translateY(14px)} to{opacity:1; transform:none} }
+
+      /* SMALL PHONES (≤360px): keep 6 tabs + the set grid comfortable */
+      @media (max-width: 360px) {
+        .tab { font-size:9px; }
+        .tab svg { width:17px; height:17px; }
+        .content { padding:8px 12px 110px; }
+        .topbar { padding-left:14px; padding-right:14px; }
+        .brand h1 { font-size:24px; }
+        .profile-name { max-width:72px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .session-body { padding-left:12px; padding-right:12px; }
+      }
+      /* Respect reduced-motion (mostly a mobile OS setting) */
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation-duration:.01ms !important; transition-duration:.01ms !important; }
+      }
     `}</style>
   );
 }

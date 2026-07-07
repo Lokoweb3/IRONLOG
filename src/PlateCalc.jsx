@@ -45,9 +45,10 @@ export default function PlateCalc({ initialTarget, onClose }) {
           <label className="pc-field">
             <span>Target</span>
             <input
-              inputMode="decimal" placeholder="lbs" autoFocus
+              inputMode="decimal" placeholder="lbs" enterKeyHint="done"
               value={target}
               onChange={(e) => setTarget(e.target.value.replace(/[^\d.]/g, ""))}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
             />
           </label>
           <div className="pc-bars">
@@ -105,7 +106,8 @@ const PC_CSS = `
     display:flex; align-items:flex-end; justify-content:center; }
   .pc-sheet { background:var(--surface); border:1px solid var(--line); border-bottom:none;
     border-radius:20px 20px 0 0; padding:18px 18px calc(20px + env(safe-area-inset-bottom));
-    width:100%; max-width:520px; animation:pc-up .22s ease; }
+    width:100%; max-width:520px; animation:pc-up .22s ease;
+    max-height:85dvh; overflow-y:auto; }
   @keyframes pc-up { from { transform:translateY(40px); opacity:0; } to { transform:none; opacity:1; } }
   .pc-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
   .pc-head h3 { font-size:17px; font-weight:600; margin:0; }
