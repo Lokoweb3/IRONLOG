@@ -8,7 +8,7 @@ export const DEFAULT_PROGRAM_DAYS = [
     name: "Lower Body — Day 1",
     focus: "Glutes & Quads",
     tag: "LB1",
-    color: "#d8ff36",
+    color: "#7f77dd",
     exercises: [
       { key: "lower1-1", name: "Standard Squats", variations: ["Barbell", "Smith Machine", "Hack Squat"], sets: 3 },
       { key: "lower1-2", name: "RDL", variations: ["Barbell", "Dumbbells", "Smith Machine"], sets: 2 },

@@ -24,11 +24,12 @@ const ChartFallback = () => <p className="chart-hint" style={{ padding: 40 }}>Lo
 /*  seed). Days carry their own `color`; these helpers pick/derive one. */
 /* ------------------------------------------------------------------ */
 const DAY_PALETTE = [
-  "#d8ff36", "#46d9ff", "#ffb13e", "#ff6fd0",
+  "#7f77dd", "#46d9ff", "#ffb13e", "#ff6fd0",
   "#7c9cff", "#9cff6f", "#ff8f6f", "#c46fff",
 ];
 // colors of the original 4-day split, so pre-existing history stays consistent
-const LEGACY_DAY_COLOR = { lower1: "#d8ff36", upper1: "#46d9ff", lower2: "#ffb13e", upper2: "#ff6fd0" };
+// (lime's old slot is purple now that the app accent itself is blue)
+const LEGACY_DAY_COLOR = { lower1: "#7f77dd", upper1: "#46d9ff", lower2: "#ffb13e", upper2: "#ff6fd0" };
 
 function hashColor(key) {
   let h = 0;
@@ -165,27 +166,27 @@ async function shareWorkoutCard(session, stats) {
   cv.width = S; cv.height = S;
   const ctx = cv.getContext("2d");
 
-  ctx.fillStyle = "#0a0b0d"; ctx.fillRect(0, 0, S, S);
+  ctx.fillStyle = "#0d0f12"; ctx.fillRect(0, 0, S, S);
   const glow = ctx.createRadialGradient(S * 0.95, S * 0.05, 0, S * 0.95, S * 0.05, S * 0.85);
-  glow.addColorStop(0, "rgba(216,255,54,0.13)"); glow.addColorStop(1, "rgba(216,255,54,0)");
+  glow.addColorStop(0, "rgba(55,138,221,0.13)"); glow.addColorStop(1, "rgba(55,138,221,0)");
   ctx.fillStyle = glow; ctx.fillRect(0, 0, S, S);
-  ctx.fillStyle = "#d8ff36"; ctx.fillRect(0, 0, 12, S);
+  ctx.fillStyle = "#378add"; ctx.fillRect(0, 0, 12, S);
 
   ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
-  ctx.fillStyle = "#d8ff36"; ctx.font = "700 42px Oswald, sans-serif"; ctx.fillText("▚", P, P + 36);
-  ctx.fillStyle = "#f2f4f5"; ctx.font = "700 42px Oswald, sans-serif"; ctx.fillText("IRONLOG", P + 60, P + 36);
+  ctx.fillStyle = "#378add"; ctx.font = "700 42px Oswald, sans-serif"; ctx.fillText("▚", P, P + 36);
+  ctx.fillStyle = "#f2f5f9"; ctx.font = "700 42px Oswald, sans-serif"; ctx.fillText("IRONLOG", P + 60, P + 36);
 
   let y = P + 160;
   const tag = session.tag || "DAY";
   ctx.font = "700 26px 'Space Mono', monospace";
   const tw = ctx.measureText(tag).width;
-  ctx.fillStyle = "#d8ff36"; rrect(ctx, P, y - 36, tw + 40, 50, 10); ctx.fill();
-  ctx.fillStyle = "#101200"; ctx.fillText(tag, P + 20, y);
-  ctx.fillStyle = "#8b9199"; ctx.font = "400 28px Archivo, sans-serif";
+  ctx.fillStyle = "#378add"; rrect(ctx, P, y - 36, tw + 40, 50, 10); ctx.fill();
+  ctx.fillStyle = "#071019"; ctx.fillText(tag, P + 20, y);
+  ctx.fillStyle = "#8b95a3"; ctx.font = "400 28px Archivo, sans-serif";
   ctx.fillText(fmtDate(session.startedAt), P + tw + 62, y);
 
   y += 96;
-  ctx.fillStyle = "#f2f4f5"; ctx.font = "600 66px Oswald, sans-serif";
+  ctx.fillStyle = "#f2f5f9"; ctx.font = "600 66px Oswald, sans-serif";
   y = wrapText(ctx, session.dayName, P, y, S - P * 2, 74);
 
   y += 70;
@@ -199,23 +200,23 @@ async function shareWorkoutCard(session, stats) {
   cells.forEach((c, i) => {
     const cx = P + (i % 2) * (cw + 24);
     const cy = y + Math.floor(i / 2) * (ch + 20);
-    ctx.fillStyle = "#15171b"; ctx.strokeStyle = "#2a2e36"; ctx.lineWidth = 2;
+    ctx.fillStyle = "#14171c"; ctx.strokeStyle = "#262c35"; ctx.lineWidth = 2;
     rrect(ctx, cx, cy, cw, ch, 16); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = "#d8ff36"; ctx.font = "700 60px 'Space Mono', monospace";
+    ctx.fillStyle = "#378add"; ctx.font = "700 60px 'Space Mono', monospace";
     ctx.fillText(String(c.n), cx + 28, cy + 82);
-    ctx.fillStyle = "#8b9199"; ctx.font = "400 25px Archivo, sans-serif";
+    ctx.fillStyle = "#8b95a3"; ctx.font = "400 25px Archivo, sans-serif";
     ctx.fillText(c.l, cx + 28, cy + 120);
   });
   y += 2 * ch + 20;
 
   if (stats.topLift) {
     y += 50;
-    ctx.fillStyle = "#8b9199"; ctx.font = "700 22px 'Space Mono', monospace"; ctx.fillText("TOP LIFT", P, y);
-    ctx.fillStyle = "#f2f4f5"; ctx.font = "600 40px Oswald, sans-serif";
+    ctx.fillStyle = "#8b95a3"; ctx.font = "700 22px 'Space Mono', monospace"; ctx.fillText("TOP LIFT", P, y);
+    ctx.fillStyle = "#f2f5f9"; ctx.font = "600 40px Oswald, sans-serif";
     wrapText(ctx, `${stats.topLift.name} · ${stats.topLift.e1rm} est 1RM`, P, y + 52, S - P * 2, 46);
   }
 
-  ctx.fillStyle = "#8b9199"; ctx.font = "700 26px 'Space Mono', monospace";
+  ctx.fillStyle = "#8b95a3"; ctx.font = "700 26px 'Space Mono', monospace";
   ctx.fillText("lokoto-ironlog.fly.dev", P, S - P + 10);
 
   const blob = await new Promise((r) => cv.toBlob(r, "image/png", 0.95));
@@ -1064,7 +1065,7 @@ function CalendarView({ sessions, program }) {
             const setCount = s.exercises.reduce((n, e) => n + e.sets.length, 0);
             return (
               <div className="cal-detail-row" key={s.id}>
-                <span className="day-tag sm" style={{ background: colorForDayKey(s.dayKey, program), color: "#101200" }}>{s.tag}</span>
+                <span className="day-tag sm" style={{ background: colorForDayKey(s.dayKey, program), color: "#071019" }}>{s.tag}</span>
                 <div>
                   <strong>{s.dayName}</strong>
                   <p>{s.exercises.length} exercises · {setCount} sets</p>
@@ -1090,6 +1091,8 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
   const [restSignal, setRestSignal] = useState(0);
   const [help, setHelp] = useState(null); // { name, variation } for the form-guide modal
   const [plateTarget, setPlateTarget] = useState(null); // pre-fill weight for the plate calc sheet
+  const [mode, setMode] = useState("focus");   // 'focus' = one exercise at a time | 'list' = all cards
+  const [focusKey, setFocusKey] = useState(null); // manually-tapped exercise (overrides auto-focus)
   const editing = !!active._editing; // re-opened from History to fix a past workout
 
   // Keep the screen awake during a workout — phones otherwise lock mid-set.
@@ -1143,6 +1146,12 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
       }
     });
     if (willBeDone) setRestSignal((n) => n + 1); // fires the auto rest timer
+    // checking the manually-focused exercise's final set releases the override
+    // so focus auto-advances to the next unfinished exercise
+    if (willBeDone && focusKey === exKey &&
+        ex.sets.every((st, i) => (i === idx ? true : st.done))) {
+      setFocusKey(null);
+    }
   };
   const addSet = (exKey) => update((s) => {
     const ex = s.exercises.find((e) => e.key === exKey);
@@ -1160,6 +1169,139 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
   const doneSets = active.exercises.reduce((n, e) => n + e.sets.filter((x) => x.done).length, 0);
   const pct = totalSets ? Math.round((doneSets / totalSets) * 100) : 0;
 
+  // ---- focus mode: which exercise owns the screen ----
+  // A manual tap wins; otherwise the first exercise with an unfinished set;
+  // otherwise (everything done) the last one. Guards a zero-exercise day.
+  const exs = active.exercises;
+  const exFinished = (ex) => ex.sets.length > 0 && ex.sets.every((st) => st.done);
+  const focusedEx =
+    (focusKey && exs.find((e) => e.key === focusKey)) ||
+    exs.find((e) => e.sets.some((st) => !st.done)) ||
+    exs[exs.length - 1] ||
+    null;
+  const focusedIdx = focusedEx ? exs.findIndex((e) => e.key === focusedEx.key) : -1;
+  const nextEx = focusedIdx >= 0 ? exs[focusedIdx + 1] || null : null;
+
+  // One exercise card — identical internals in both modes; `inFocus` only
+  // adds the supersized-for-the-gym styling hooks.
+  const renderExCard = (ex, ei, inFocus) => {
+    const last = lastPerformance(sessions, ex.name, ex.variation, active.id);
+    const curBest = bestSetE1rm(ex.sets);
+    const histBest = historicalBestE1rm(sessions, ex.name, ex.variation, active.id);
+    const isPR = curBest > 0 && curBest > histBest;
+    return (
+      <div className={`ex-card fade-in ${inFocus ? "ex-focus" : ""}`} key={ex.key} style={{ animationDelay: `${ei * 30}ms` }}>
+        <div className="ex-head">
+          <span className="ex-num">{String(ei + 1).padStart(2, "0")}</span>
+          <h3>{ex.name}</h3>
+          {isPR && <span className="pr-badge"><Trophy size={11} /> PR</span>}
+          <button className="howto-btn" onClick={() => setHelp({ name: ex.name, variation: ex.variation })} title="How to perform this exercise">
+            <PlayCircle size={13} /> How-to
+          </button>
+          <button
+            className="howto-btn"
+            title="Plate loading for this weight"
+            onClick={() => {
+              // pre-fill from the working weight: last set with one entered,
+              // else what was lifted last time
+              const cur = [...ex.sets].reverse().find((st) => st.w !== "")?.w;
+              const prev = last && [...last.sets].reverse().find((st) => st.w !== "")?.w;
+              setPlateTarget({ value: cur ?? prev ?? "" });
+            }}
+          >
+            <Disc size={13} /> Plates
+          </button>
+        </div>
+
+        {ex.variations.length > 0 && (
+          <div className="var-row">
+            {ex.variations.map((v) => (
+              <button
+                key={v}
+                className={`var-pill ${ex.variation === v ? "var-on" : ""}`}
+                onClick={() => setVariation(ex.key, v)}
+              >{v}</button>
+            ))}
+          </div>
+        )}
+
+        {last && (
+          <div className="last-ref">
+            <span className="last-label">Last · {fmtShort(last.date)}{last.variation && last.variation !== ex.variation ? ` (${last.variation})` : ""}</span>
+            <span className="last-sets">
+              {last.sets.map((st, i) => (
+                <span key={i} className="last-chip">{st.w || "–"}<i>×</i>{st.r || "–"}</span>
+              ))}
+            </span>
+          </div>
+        )}
+
+        {curBest > 0 && (
+          <div className="e1rm-row">
+            <span className="e1rm-label">EST. 1RM</span>
+            <span className="e1rm-vals">
+              {histBest > 0 ? Math.round(histBest) : "—"}
+              <i> → </i>
+              <b className={isPR ? "e1rm-up" : ""}>{Math.round(curBest)}</b> lbs
+            </span>
+            {isPR
+              ? <span className="pace-chip">PR pace</span>
+              : <span className="pace-gap">{Math.max(1, Math.ceil(histBest - curBest))} to PR</span>}
+          </div>
+        )}
+
+        <div className="sets">
+          <div className="set-row set-header">
+            <span>Set</span><span>Weight</span><span>Reps</span><span></span>
+          </div>
+          {ex.sets.map((st, si) => (
+            <React.Fragment key={si}>
+              {st.restBefore != null && (
+                <div className="rest-log"><Timer size={11} /> rested {fmtRest(st.restBefore)}</div>
+              )}
+              <div className={`set-row ${st.done ? "set-done" : ""}`}>
+                <span className="set-idx">{si + 1}</span>
+                <input
+                  className="set-input" inputMode="decimal" placeholder="lbs" enterKeyHint="done"
+                  value={st.w} onChange={(e) => setField(ex.key, si, "w", e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                />
+                <input
+                  className="set-input" inputMode="numeric" placeholder="reps" enterKeyHint="done"
+                  value={st.r} onChange={(e) => setField(ex.key, si, "r", e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                />
+                <div className="set-actions">
+                  <button
+                    className={`check ${st.done ? "check-on" : ""}`}
+                    onClick={() => toggleDone(ex.key, si)}
+                    aria-label="mark set done"
+                  ><Check size={16} /></button>
+                  {ex.sets.length > 1 && (
+                    <button className="del-set" onClick={() => removeSet(ex.key, si)} aria-label="remove set">
+                      <X size={15} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            </React.Fragment>
+          ))}
+        </div>
+
+        <button className="add-set" onClick={() => addSet(ex.key)}>
+          <Plus size={15} /> Add set
+        </button>
+
+        <input
+          className="ex-note"
+          placeholder="＋ note (form cue, pain, tempo…)"
+          value={ex.note || ""}
+          onChange={(e) => setExNote(ex.key, e.target.value)}
+        />
+      </div>
+    );
+  };
+
   return (
     <div className="session">
       <header className="session-head">
@@ -1171,6 +1313,14 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
             <p>{active.focus}</p>
           </div>
         </div>
+        <button
+          className="icon-btn mode-toggle"
+          onClick={() => setMode((m) => (m === "focus" ? "list" : "focus"))}
+          aria-label={mode === "focus" ? "Show all exercises" : "Focus one exercise at a time"}
+          title={mode === "focus" ? "Show all exercises" : "Focus one exercise"}
+        >
+          {mode === "focus" ? <ListChecks size={19} /> : <Target size={19} />}
+        </button>
         <RestTimer autoSignal={restSignal} />
       </header>
 
@@ -1202,109 +1352,37 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
       </div>
 
       <main className="session-body">
-        {active.exercises.map((ex, ei) => {
-          const last = lastPerformance(sessions, ex.name, ex.variation, active.id);
-          const curBest = bestSetE1rm(ex.sets);
-          const histBest = historicalBestE1rm(sessions, ex.name, ex.variation, active.id);
-          const isPR = curBest > 0 && curBest > histBest;
-          return (
-            <div className="ex-card fade-in" key={ex.key} style={{ animationDelay: `${ei * 30}ms` }}>
-              <div className="ex-head">
-                <span className="ex-num">{String(ei + 1).padStart(2, "0")}</span>
-                <h3>{ex.name}</h3>
-                {isPR && <span className="pr-badge"><Trophy size={11} /> PR</span>}
-                <button className="howto-btn" onClick={() => setHelp({ name: ex.name, variation: ex.variation })} title="How to perform this exercise">
-                  <PlayCircle size={13} /> How-to
-                </button>
-                <button
-                  className="howto-btn"
-                  title="Plate loading for this weight"
-                  onClick={() => {
-                    // pre-fill from the working weight: last set with one entered,
-                    // else what was lifted last time
-                    const cur = [...ex.sets].reverse().find((st) => st.w !== "")?.w;
-                    const prev = last && [...last.sets].reverse().find((st) => st.w !== "")?.w;
-                    setPlateTarget({ value: cur ?? prev ?? "" });
-                  }}
-                >
-                  <Disc size={13} /> Plates
-                </button>
-              </div>
-
-              {ex.variations.length > 0 && (
-                <div className="var-row">
-                  {ex.variations.map((v) => (
-                    <button
-                      key={v}
-                      className={`var-pill ${ex.variation === v ? "var-on" : ""}`}
-                      onClick={() => setVariation(ex.key, v)}
-                    >{v}</button>
-                  ))}
-                </div>
-              )}
-
-              {last && (
-                <div className="last-ref">
-                  <span className="last-label">Last · {fmtShort(last.date)}{last.variation && last.variation !== ex.variation ? ` (${last.variation})` : ""}</span>
-                  <span className="last-sets">
-                    {last.sets.map((st, i) => (
-                      <span key={i} className="last-chip">{st.w || "–"}<i>×</i>{st.r || "–"}</span>
-                    ))}
-                  </span>
-                </div>
-              )}
-
-              <div className="sets">
-                <div className="set-row set-header">
-                  <span>Set</span><span>Weight</span><span>Reps</span><span></span>
-                </div>
-                {ex.sets.map((st, si) => (
-                  <React.Fragment key={si}>
-                    {st.restBefore != null && (
-                      <div className="rest-log"><Timer size={11} /> rested {fmtRest(st.restBefore)}</div>
-                    )}
-                    <div className={`set-row ${st.done ? "set-done" : ""}`}>
-                      <span className="set-idx">{si + 1}</span>
-                      <input
-                        className="set-input" inputMode="decimal" placeholder="lbs" enterKeyHint="done"
-                        value={st.w} onChange={(e) => setField(ex.key, si, "w", e.target.value)}
-                        onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-                      />
-                      <input
-                        className="set-input" inputMode="numeric" placeholder="reps" enterKeyHint="done"
-                        value={st.r} onChange={(e) => setField(ex.key, si, "r", e.target.value)}
-                        onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-                      />
-                      <div className="set-actions">
-                        <button
-                          className={`check ${st.done ? "check-on" : ""}`}
-                          onClick={() => toggleDone(ex.key, si)}
-                          aria-label="mark set done"
-                        ><Check size={16} /></button>
-                        {ex.sets.length > 1 && (
-                          <button className="del-set" onClick={() => removeSet(ex.key, si)} aria-label="remove set">
-                            <X size={15} />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </React.Fragment>
-                ))}
-              </div>
-
-              <button className="add-set" onClick={() => addSet(ex.key)}>
-                <Plus size={15} /> Add set
-              </button>
-
-              <input
-                className="ex-note"
-                placeholder="＋ note (form cue, pain, tempo…)"
-                value={ex.note || ""}
-                onChange={(e) => setExNote(ex.key, e.target.value)}
-              />
+        {mode === "list" || !focusedEx ? (
+          exs.map((ex, ei) => renderExCard(ex, ei, false))
+        ) : (
+          <>
+            <div className="hud-strip fade-in">
+              <span className="hud-label">EXERCISE {focusedIdx + 1} OF {exs.length}</span>
+              <span className="hud-pips" aria-hidden="true">
+                {focusedEx.sets.map((st, i) => <i key={i} className={st.done ? "pip-on" : ""} />)}
+              </span>
             </div>
-          );
-        })}
+
+            {renderExCard(focusedEx, focusedIdx, true)}
+
+            {nextEx && (
+              <button className="next-ex-btn" onClick={() => setFocusKey(nextEx.key)}>
+                NEXT ▸ {nextEx.name} · {nextEx.sets.length} set{nextEx.sets.length === 1 ? "" : "s"}
+              </button>
+            )}
+
+            <div className="ex-queue">
+              {exs.map((ex, ei) => ex.key === focusedEx.key ? null : (
+                <button key={ex.key} className={`ex-row ${exFinished(ex) ? "ex-row-done" : ""}`} onClick={() => setFocusKey(ex.key)}>
+                  <span className="ex-row-num">{String(ei + 1).padStart(2, "0")}</span>
+                  <span className="ex-row-name">{ex.name}</span>
+                  <span className="ex-row-count">{ex.sets.filter((st) => st.done).length}/{ex.sets.length}</span>
+                  {exFinished(ex) && <Check size={15} className="ex-row-check" />}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
         <div style={{ height: 96 }} />
       </main>
 
@@ -1526,11 +1604,33 @@ function RestTimer({ autoSignal = 0 }) {
   const live = running || remaining > 0;          // a countdown is in progress (running or paused)
   const pctLeft = duration ? Math.min(100, Math.max(0, (remaining / duration) * 100)) : 0;
 
+  // progress ring geometry (48px button, 4px stroke). The arc drains as the
+  // rest elapses; +15s adjustments can push remaining past duration — clamp.
+  const RING_R = 22, RING_C = 2 * Math.PI * RING_R;
+  const fracLeft = duration ? Math.min(1, Math.max(0, remaining / duration)) : 0;
+
   return (
     <>
     <div className="rest">
-      <button className={`icon-btn timer-btn ${live ? "timer-on" : ""} ${running ? "timer-live" : ""}`} onClick={() => setOpen((o) => !o)}>
-        {live ? <span className="timer-count">{mmss}</span> : <Timer size={20} />}
+      <button
+        className={`icon-btn timer-btn ${live ? "timer-on timer-ring-btn" : ""} ${running ? "timer-live" : ""}`}
+        onClick={() => setOpen((o) => !o)}
+        aria-label={live ? `rest timer, ${mmss} remaining` : "rest timer"}
+      >
+        {live ? (
+          <span className="timer-ring">
+            <svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true">
+              <circle className="ring-track" cx="24" cy="24" r={RING_R} />
+              <circle
+                className="ring-arc" cx="24" cy="24" r={RING_R}
+                strokeDasharray={RING_C}
+                strokeDashoffset={RING_C * (1 - fracLeft)}
+                transform="rotate(-90 24 24)"
+              />
+            </svg>
+            <span className={`timer-count ${remaining >= 600 ? "timer-count-sm" : ""}`}>{mmss}</span>
+          </span>
+        ) : <Timer size={20} />}
       </button>
       {open && (
         <div className="rest-pop">
@@ -1933,7 +2033,7 @@ function StrengthTrends({ sessions }) {
           <p className="chart-hint">Log this lift at least twice to see a trend line.</p>
         ) : (
           <Suspense fallback={<ChartFallback />}>
-            <TrendChart data={data} yKey={key} color="#d8ff36" height={240} format={(v) => [`${v} lbs`, unit]} />
+            <TrendChart data={data} yKey={key} color="#378add" height={240} format={(v) => [`${v} lbs`, unit]} />
           </Suspense>
         )}
       </div>
@@ -1958,7 +2058,7 @@ const GOALS = {
   bulk: { factor: 1.12, proteinPerLb: 0.9, label: "Bulk" },
 };
 const MACROS = [
-  { key: "calories", label: "Calories", unit: "kcal", color: "#d8ff36" },
+  { key: "calories", label: "Calories", unit: "kcal", color: "#378add" },
   { key: "protein", label: "Protein", unit: "g", color: "#46d9ff" },
   { key: "carbs", label: "Carbs", unit: "g", color: "#ffb13e" },
   { key: "fat", label: "Fat", unit: "g", color: "#ff6fd0" },
@@ -2280,7 +2380,7 @@ function EditEntry({ entry, onSave, onClose }) {
               <label className="field-label">{unit === "serving" ? `Servings (1 = ${Math.round(servingG)} g)` : "Amount (grams)"}</label>
               <input className="login-input" inputMode="decimal" value={qty} onChange={(e) => setQty(e.target.value.replace(/[^\d.]/g, ""))} />
               <div className="food-preview">
-                <span style={{ color: "#d8ff36" }}>{Math.round(scaled.calories)} kcal</span>
+                <span style={{ color: "#378add" }}>{Math.round(scaled.calories)} kcal</span>
                 <span>P {Math.round(scaled.protein)}</span><span>C {Math.round(scaled.carbs)}</span><span>F {Math.round(scaled.fat)}</span>
               </div>
             </>
@@ -2496,7 +2596,7 @@ function FoodSearch({ day, slot, onAdd, onLogRecipe, onClose }) {
                 <input className="login-input" inputMode="decimal" value={qty}
                   onChange={(e) => setQty(e.target.value.replace(/[^\d.]/g, ""))} />
                 <div className="food-preview">
-                  <span style={{ color: "#d8ff36" }}>{Math.round(scaled.calories)} kcal</span>
+                  <span style={{ color: "#378add" }}>{Math.round(scaled.calories)} kcal</span>
                   <span>P {Math.round(scaled.protein)}</span><span>C {Math.round(scaled.carbs)}</span><span>F {Math.round(scaled.fat)}</span>
                   {unit === "serving" && grams > 0 && <span>= {Math.round(grams)} g</span>}
                 </div>
@@ -3203,15 +3303,15 @@ function FontsAndStyles() {
       /* Theme vars on :root too, so portaled UI (the rest popup) inherits them
          even though it renders outside .wt-root on document.body. */
       :root {
-        --bg:#0a0b0d; --surface:#15171b; --surface2:#1d2025; --line:#2a2e36;
-        --text:#f2f4f5; --muted:#8b9199; --accent:#d8ff36; --danger:#ff5a4d;
+        --bg:#0d0f12; --surface:#14171c; --surface2:#1d2229; --line:#262c35;
+        --text:#f2f5f9; --muted:#8b95a3; --accent:#378add; --accent-2:#85b7eb; --danger:#ff5a4d;
       }
       .wt-root {
-        --bg:#0a0b0d; --surface:#15171b; --surface2:#1d2025; --line:#2a2e36;
-        --text:#f2f4f5; --muted:#8b9199; --accent:#d8ff36; --danger:#ff5a4d;
+        --bg:#0d0f12; --surface:#14171c; --surface2:#1d2229; --line:#262c35;
+        --text:#f2f5f9; --muted:#8b95a3; --accent:#378add; --accent-2:#85b7eb; --danger:#ff5a4d;
         position:relative; min-height:100vh; min-height:100dvh; background:
-          radial-gradient(900px 500px at 90% -10%, rgba(216,255,54,.06), transparent 60%),
-          radial-gradient(700px 500px at -10% 110%, rgba(216,255,54,.04), transparent 60%),
+          radial-gradient(900px 500px at 90% -10%, rgba(55,138,221,.06), transparent 60%),
+          radial-gradient(700px 500px at -10% 110%, rgba(55,138,221,.04), transparent 60%),
           var(--bg);
         color:var(--text); font-family:'Archivo',sans-serif;
         max-width:560px; margin:0 auto; padding-bottom:env(safe-area-inset-bottom);
@@ -3240,7 +3340,7 @@ function FontsAndStyles() {
       .profile-chip svg { color:var(--muted); }
       .profile-name { font-family:'Oswald'; font-weight:600; font-size:14px; max-width:90px; overflow:hidden;
         text-overflow:ellipsis; white-space:nowrap; }
-      .avatar { width:26px; height:26px; border-radius:99px; background:var(--accent); color:#101200;
+      .avatar { width:26px; height:26px; border-radius:99px; background:var(--accent); color:#071019;
         display:flex; align-items:center; justify-content:center; font-family:'Oswald'; font-weight:700; font-size:14px; flex-shrink:0; }
       .avatar.lg { width:42px; height:42px; font-size:20px; }
       .avatar-img { object-fit:cover; }
@@ -3254,13 +3354,13 @@ function FontsAndStyles() {
       .sync-pending svg { flex-shrink:0; }
 
       .update-banner { position:sticky; top:0; z-index:30; width:100%; display:flex; align-items:center;
-        justify-content:center; gap:8px; background:var(--accent); color:#101200; border:none;
+        justify-content:center; gap:8px; background:var(--accent); color:#071019; border:none;
         font-family:'Archivo'; font-weight:700; font-size:13px; padding:11px; cursor:pointer;
         box-shadow:0 4px 16px rgba(0,0,0,.4); }
-      .update-banner svg { color:#101200; }
+      .update-banner svg { color:#071019; }
 
-      .demo-banner { width:100%; text-align:center; background:rgba(216,255,54,.08);
-        border-bottom:1px solid rgba(216,255,54,.25); color:var(--accent);
+      .demo-banner { width:100%; text-align:center; background:rgba(55,138,221,.08);
+        border-bottom:1px solid rgba(55,138,221,.25); color:var(--accent);
         font-family:'Archivo'; font-size:12px; font-weight:600; padding:7px 14px; }
 
       /* LOGIN */
@@ -3297,9 +3397,9 @@ function FontsAndStyles() {
       .pin-who { display:flex; align-items:center; gap:12px; justify-content:center; font-family:'Oswald'; font-weight:600;
         font-size:20px; margin-bottom:6px; }
       .login-err { color:var(--danger); font-size:13px; font-weight:600; text-align:center; }
-      .login-go { background:var(--accent); color:#101200; border:none; border-radius:13px; font-family:'Oswald';
+      .login-go { background:var(--accent); color:#071019; border:none; border-radius:13px; font-family:'Oswald';
         font-weight:700; font-size:17px; letter-spacing:.03em; padding:15px; cursor:pointer; margin-top:4px;
-        box-shadow:0 8px 24px rgba(216,255,54,.16); }
+        box-shadow:0 8px 24px rgba(55,138,221,.16); }
       .login-go:active { transform:scale(.98); }
       .login-back { background:none; border:none; color:var(--muted); font-family:'Archivo'; font-size:13px; cursor:pointer; padding:6px; }
       .login-note { font-size:11.5px; line-height:1.6; color:var(--muted); text-align:center; margin:8px 0 0; }
@@ -3324,7 +3424,7 @@ function FontsAndStyles() {
       .lp-card { background:linear-gradient(150deg, var(--surface2), var(--surface)); border:1px solid var(--line);
         border-radius:16px; padding:18px; }
       .lp-ico { display:inline-flex; align-items:center; justify-content:center; width:42px; height:42px; border-radius:11px;
-        background:rgba(216,255,54,.1); color:var(--accent); border:1px solid rgba(216,255,54,.3); }
+        background:rgba(55,138,221,.1); color:var(--accent); border:1px solid rgba(55,138,221,.3); }
       .lp-card h3 { font-size:18px; font-weight:600; margin:12px 0 0; }
       .lp-card p { margin:6px 0 0; font-size:13px; line-height:1.6; color:var(--muted); }
       .lp-strip { display:flex; flex-wrap:wrap; justify-content:center; gap:10px 18px; margin:26px 0 0; }
@@ -3347,7 +3447,7 @@ function FontsAndStyles() {
       .day-card::before { content:""; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--day-accent, var(--accent)); }
       .day-card-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
       .day-tag { font-family:'Space Mono',monospace; font-size:11px; font-weight:700; letter-spacing:.06em;
-        background:var(--accent); color:#101200; padding:3px 8px; border-radius:6px; }
+        background:var(--accent); color:#071019; padding:3px 8px; border-radius:6px; }
       .day-tag.sm { font-size:10px; padding:2px 6px; }
       .day-last { font-size:11px; color:var(--muted); font-family:'Space Mono',monospace; }
       .day-name { font-size:22px; font-weight:600; }
@@ -3361,13 +3461,13 @@ function FontsAndStyles() {
 
       /* TABBAR */
       .tabbar { position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100%; max-width:560px;
-        display:flex; background:rgba(13,14,17,.86); backdrop-filter:blur(14px);
+        display:flex; background:rgba(13,15,18,.86); backdrop-filter:blur(14px);
         border-top:1px solid var(--line); padding:8px 8px calc(8px + env(safe-area-inset-bottom)); z-index:5; }
       .tab { flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; background:none; border:none;
         color:var(--muted); font-family:'Archivo'; font-size:11px; font-weight:600; padding:7px 0; cursor:pointer;
         border-radius:11px; transition:color .15s, background .15s; }
       .tab span { letter-spacing:.02em; }
-      .tab-on { color:var(--accent); background:rgba(216,255,54,.08); }
+      .tab-on { color:var(--accent); background:rgba(55,138,221,.08); }
 
       /* SESSION */
       .session { min-height:100vh; min-height:100dvh; display:flex; flex-direction:column; }
@@ -3379,8 +3479,20 @@ function FontsAndStyles() {
       .icon-btn.timer-on { border-color:var(--accent); color:var(--accent); }
       .timer-btn { min-width:42px; width:auto; padding:0 10px; }
       .timer-live { animation:timerpulse 1.6s ease-in-out infinite; }
-      @keyframes timerpulse { 0%,100%{ box-shadow:0 0 0 0 rgba(216,255,54,0); } 50%{ box-shadow:0 0 0 4px rgba(216,255,54,.12); } }
+      @keyframes timerpulse { 0%,100%{ box-shadow:0 0 0 0 rgba(55,138,221,0); } 50%{ box-shadow:0 0 0 4px rgba(55,138,221,.12); } }
       .timer-count { font-family:'Space Mono',monospace; font-size:15px; font-weight:700; letter-spacing:.02em; }
+
+      /* live-countdown progress ring (replaces the pill while a rest runs) */
+      .timer-ring-btn { width:48px; min-width:48px; height:48px; padding:0; border:none; background:none; border-radius:50%; }
+      .timer-ring { position:relative; width:48px; height:48px; display:block; }
+      .timer-ring svg { display:block; }
+      .ring-track { fill:none; stroke:var(--surface2); stroke-width:4; }
+      .ring-arc { fill:none; stroke:var(--accent); stroke-width:4; stroke-linecap:round;
+        transition:stroke-dashoffset .25s linear; }
+      .timer-ring .timer-count { position:absolute; inset:0; display:flex; align-items:center;
+        justify-content:center; font-size:12px; color:var(--text); }
+      .timer-ring .timer-count.timer-count-sm { font-size:10px; letter-spacing:0; }
+
       .session-title { flex:1; display:flex; align-items:center; gap:10px; min-width:0; }
       .session-title h2 { font-size:18px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
       .session-title p { margin:1px 0 0; font-size:12px; color:var(--accent); }
@@ -3401,6 +3513,51 @@ function FontsAndStyles() {
 
       .session-body { flex:1; padding:6px 14px 0; }
       .ex-card { background:var(--surface); border:1px solid var(--line); border-radius:15px; padding:15px; margin-bottom:13px; }
+
+      /* FOCUS MODE — one exercise owns the screen */
+      .mode-toggle { border-radius:50%; }
+      .hud-strip { display:flex; align-items:center; justify-content:space-between; gap:12px;
+        padding:2px 4px 10px; }
+      .hud-label { font-family:'Space Mono',monospace; font-size:11px; font-weight:700;
+        letter-spacing:.18em; color:var(--muted); }
+      .hud-pips { display:flex; gap:5px; }
+      .hud-pips i { width:20px; height:5px; border-radius:3px; background:var(--surface2);
+        transition:background .2s; }
+      .hud-pips i.pip-on { background:var(--accent); }
+      .ex-focus { border-color:rgba(55,138,221,.5);
+        box-shadow:0 0 0 1px rgba(55,138,221,.22), 0 12px 34px rgba(0,0,0,.35); }
+      .ex-focus .set-input { font-size:20px; font-weight:700; padding:15px 4px; }
+      .ex-focus .check { width:46px; height:46px; border-radius:50%; }
+      .ex-focus .del-set { height:46px; }
+      .next-ex-btn { width:100%; background:none; border:1px dashed var(--line); color:var(--muted);
+        font-family:'Space Mono',monospace; font-size:12px; font-weight:700; letter-spacing:.08em;
+        padding:13px 15px; border-radius:12px; cursor:pointer; margin-bottom:13px; text-align:left;
+        white-space:nowrap; overflow:hidden; text-overflow:ellipsis; transition:border-color .15s, color .15s; }
+      .next-ex-btn:active, .next-ex-btn:hover { border-color:var(--accent); color:var(--accent); }
+      .ex-queue { display:flex; flex-direction:column; gap:8px; }
+      .ex-row { display:flex; align-items:center; gap:12px; width:100%; text-align:left;
+        background:var(--surface); border:1px solid var(--line); border-radius:12px;
+        padding:13px 15px; color:var(--text); font-family:'Archivo'; font-size:14px; font-weight:600;
+        cursor:pointer; }
+      .ex-row:active { border-color:var(--accent); }
+      .ex-row-num { font-family:'Space Mono',monospace; font-size:11px; font-weight:700; color:var(--muted); }
+      .ex-row-name { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .ex-row-count { font-family:'Space Mono',monospace; font-size:12px; color:var(--muted); }
+      .ex-row-done .ex-row-name { text-decoration:line-through; color:var(--muted); }
+      .ex-row-check { color:var(--accent); flex-shrink:0; }
+
+      /* PR PACE — live est-1RM readout */
+      .e1rm-row { display:flex; align-items:center; gap:9px; margin:10px 0 2px;
+        background:var(--surface2); border-radius:10px; padding:8px 11px;
+        font-family:'Space Mono',monospace; }
+      .e1rm-label { font-size:10px; font-weight:700; letter-spacing:.14em; color:var(--muted); }
+      .e1rm-vals { font-size:13px; color:var(--text); }
+      .e1rm-vals i { font-style:normal; color:var(--muted); }
+      .e1rm-vals b { font-weight:700; }
+      .e1rm-vals b.e1rm-up { color:var(--accent-2); }
+      .pace-chip { margin-left:auto; background:var(--accent); color:#071019; border-radius:999px;
+        font-size:10px; font-weight:700; padding:3px 9px; letter-spacing:.04em; flex-shrink:0; }
+      .pace-gap { margin-left:auto; font-size:11px; color:var(--muted); flex-shrink:0; white-space:nowrap; }
       .ex-head { display:flex; align-items:baseline; gap:9px; }
       .ex-num { font-family:'Space Mono',monospace; font-size:12px; color:var(--accent); font-weight:700; }
       .ex-head h3 { font-size:17px; font-weight:600; }
@@ -3433,7 +3590,7 @@ function FontsAndStyles() {
       .var-pill { background:var(--surface2); border:1px solid var(--line); color:var(--muted); font-family:'Archivo';
         font-size:12px; font-weight:600; padding:6px 11px; border-radius:99px; cursor:pointer; transition:all .15s; }
       .var-pill:active { transform:scale(.95); }
-      .var-on { background:var(--accent); color:#101200; border-color:var(--accent); }
+      .var-on { background:var(--accent); color:#071019; border-color:var(--accent); }
 
       .last-ref { margin:10px 0 2px; padding:9px 11px; background:var(--surface2); border-radius:10px;
         display:flex; flex-direction:column; gap:6px; }
@@ -3457,11 +3614,11 @@ function FontsAndStyles() {
       .set-actions { display:flex; gap:6px; justify-content:flex-end; }
       .check { width:38px; height:38px; border-radius:9px; border:1px solid var(--line); background:var(--surface2);
         color:var(--muted); display:flex; align-items:center; justify-content:center; cursor:pointer; transition:all .15s; }
-      .check-on { background:var(--accent); border-color:var(--accent); color:#101200; }
+      .check-on { background:var(--accent); border-color:var(--accent); color:#071019; }
       .del-set { width:30px; height:38px; border-radius:9px; border:none; background:none; color:#565b63; cursor:pointer;
         display:flex; align-items:center; justify-content:center; }
       .del-set:active { color:var(--danger); }
-      .set-done .set-input { border-color:rgba(216,255,54,.4); }
+      .set-done .set-input { border-color:rgba(55,138,221,.4); }
       .rest-log { display:flex; align-items:center; gap:5px; font-family:'Space Mono',monospace; font-size:10px;
         letter-spacing:.04em; color:var(--muted); margin:-2px 0 8px 48px; }
       .rest-log svg { color:var(--accent); }
@@ -3475,9 +3632,9 @@ function FontsAndStyles() {
 
       .pr-badge { display:inline-flex; align-items:center; gap:3px; vertical-align:middle; margin-left:7px;
         font-family:'Space Mono',monospace; font-size:10px; font-weight:700; letter-spacing:.04em;
-        background:var(--accent); color:#101200; padding:2px 7px; border-radius:99px; }
+        background:var(--accent); color:#071019; padding:2px 7px; border-radius:99px; }
       .pr-badge.sm { font-size:9px; padding:1px 6px; margin-left:6px; }
-      .pr-badge svg { color:#101200; }
+      .pr-badge svg { color:#071019; }
 
       .sound-on { color:var(--accent) !important; border-color:var(--accent) !important; }
 
@@ -3488,27 +3645,27 @@ function FontsAndStyles() {
         padding:13px; border-radius:12px; cursor:pointer; transition:border-color .15s; }
       .backup-btn:active { border-color:var(--accent); color:var(--accent); }
       .backup-btn:disabled { opacity:.4; cursor:not-allowed; }
-      .backup-msg { margin-top:10px; padding:10px 13px; background:rgba(216,255,54,.1); border:1px solid var(--accent);
+      .backup-msg { margin-top:10px; padding:10px 13px; background:rgba(55,138,221,.1); border:1px solid var(--accent);
         border-radius:10px; color:var(--accent); font-size:12px; font-family:'Space Mono',monospace; text-align:center; }
 
       .metric-tabs { display:flex; gap:6px; background:var(--surface2); border:1px solid var(--line); border-radius:12px;
         padding:4px; margin-bottom:14px; }
       .metric-tabs button { flex:1; background:none; border:none; color:var(--muted); font-family:'Oswald';
         font-weight:600; font-size:14px; letter-spacing:.03em; padding:9px; border-radius:9px; cursor:pointer; transition:all .15s; }
-      .metric-tabs button.mt-on { background:var(--accent); color:#101200; }
+      .metric-tabs button.mt-on { background:var(--accent); color:#071019; }
 
       /* ACHIEVEMENTS */
       .badge-grid { display:flex; flex-direction:column; gap:10px; }
       .badge { display:flex; align-items:center; gap:12px; background:var(--surface); border:1px solid var(--line);
         border-radius:14px; padding:13px 14px; opacity:.55; transition:opacity .2s; }
-      .badge-on { opacity:1; border-color:rgba(216,255,54,.4); }
+      .badge-on { opacity:1; border-color:rgba(55,138,221,.4); }
       .badge-ico { width:44px; height:44px; flex-shrink:0; border-radius:11px; display:flex; align-items:center;
         justify-content:center; background:var(--surface2); color:var(--muted); border:1px solid var(--line); }
-      .badge-on .badge-ico { background:rgba(216,255,54,.12); color:var(--accent); border-color:rgba(216,255,54,.4); }
+      .badge-on .badge-ico { background:rgba(55,138,221,.12); color:var(--accent); border-color:rgba(55,138,221,.4); }
       .badge-text { flex:1; min-width:0; }
       .badge-text strong { font-family:'Oswald'; font-weight:600; font-size:16px; display:block; }
       .badge-text span { font-size:12px; color:var(--muted); }
-      .badge-check { width:30px; height:30px; flex-shrink:0; border-radius:99px; background:var(--accent); color:#101200;
+      .badge-check { width:30px; height:30px; flex-shrink:0; border-radius:99px; background:var(--accent); color:#071019;
         display:flex; align-items:center; justify-content:center; }
       .badge-prog { width:54px; flex-shrink:0; height:6px; background:var(--surface2); border-radius:99px; overflow:hidden; }
       .badge-prog-fill { height:100%; background:var(--muted); border-radius:99px; }
@@ -3543,9 +3700,9 @@ function FontsAndStyles() {
 
       .finish-bar { position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100%; max-width:560px;
         padding:14px 16px calc(16px + env(safe-area-inset-bottom)); background:linear-gradient(transparent, var(--bg) 30%); z-index:4; }
-      .finish-btn { width:100%; background:var(--accent); color:#101200; border:none; border-radius:13px;
+      .finish-btn { width:100%; background:var(--accent); color:#071019; border:none; border-radius:13px;
         font-family:'Oswald'; font-weight:700; font-size:17px; letter-spacing:.03em; padding:16px; cursor:pointer;
-        box-shadow:0 8px 24px rgba(216,255,54,.18); transition:transform .12s; }
+        box-shadow:0 8px 24px rgba(55,138,221,.18); transition:transform .12s; }
       .finish-btn:active { transform:scale(.98); }
 
       /* REST POPOVER */
@@ -3558,7 +3715,7 @@ function FontsAndStyles() {
       .rest-adjust { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin:8px 0; }
       .rest-adjust button { background:var(--surface2); border:1px solid var(--line); color:var(--text);
         font-family:'Space Mono',monospace; font-size:12px; padding:8px 0; border-radius:8px; cursor:pointer; }
-      .rest-adjust button:active:not(:disabled) { background:var(--accent); color:#101200; }
+      .rest-adjust button:active:not(:disabled) { background:var(--accent); color:#071019; }
       .rest-adjust button:disabled { opacity:.4; }
       .rest-custom { display:flex; align-items:center; gap:6px; margin:0 0 8px; }
       .rest-custom-input { flex:1; min-width:0; background:var(--surface2); border:1px solid var(--line); color:var(--text);
@@ -3567,17 +3724,17 @@ function FontsAndStyles() {
       .rest-custom-unit { font-size:11px; color:var(--muted); font-family:'Space Mono',monospace; }
       .rest-custom-set { background:var(--surface2); border:1px solid var(--line); color:var(--text);
         font-family:'Archivo'; font-weight:700; font-size:12px; padding:8px 13px; border-radius:8px; cursor:pointer; }
-      .rest-custom-set:active:not(:disabled) { background:var(--accent); color:#101200; }
+      .rest-custom-set:active:not(:disabled) { background:var(--accent); color:#071019; }
       .rest-custom-set:disabled { opacity:.4; }
       .rest-presets { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin:10px 0 8px; }
       .rest-presets button { background:var(--surface2); border:1px solid var(--line); color:var(--text);
         font-family:'Space Mono',monospace; font-size:12px; padding:7px 0; border-radius:8px; cursor:pointer; }
-      .rest-presets button:active { background:var(--accent); color:#101200; }
-      .rest-presets button.preset-on { background:var(--accent); color:#101200; border-color:var(--accent); }
+      .rest-presets button:active { background:var(--accent); color:#071019; }
+      .rest-presets button.preset-on { background:var(--accent); color:#071019; border-color:var(--accent); }
       .auto-toggle { width:100%; margin:8px 0; background:var(--surface2); border:1px solid var(--line);
         color:var(--muted); font-family:'Space Mono',monospace; font-size:11px; font-weight:700; letter-spacing:.04em;
         padding:8px; border-radius:8px; cursor:pointer; transition:all .15s; }
-      .auto-toggle.auto-on { background:rgba(216,255,54,.12); border-color:var(--accent); color:var(--accent); }
+      .auto-toggle.auto-on { background:rgba(55,138,221,.12); border-color:var(--accent); color:var(--accent); }
       .rest-ctrl { display:flex; gap:6px; }
       .rest-ctrl button { flex:1; background:var(--surface2); border:1px solid var(--line); color:var(--text);
         padding:8px; border-radius:8px; display:flex; align-items:center; justify-content:center; cursor:pointer; }
@@ -3600,7 +3757,7 @@ function FontsAndStyles() {
       .rest-ov-btn { flex:1; padding:13px 6px; border-radius:12px; font-family:'Archivo'; font-weight:700; font-size:14px;
         cursor:pointer; border:1px solid var(--line); background:var(--surface2); color:var(--text); }
       .rest-ov-btn:active { transform:scale(.97); }
-      .rest-ov-btn.primary { background:var(--accent); color:#101200; border-color:var(--accent); }
+      .rest-ov-btn.primary { background:var(--accent); color:#071019; border-color:var(--accent); }
       .rest-ov-done { display:flex; align-items:center; justify-content:center; gap:8px; font-family:'Oswald';
         font-weight:700; font-size:23px; color:var(--accent); margin:2px 0 14px; }
 
@@ -3622,10 +3779,10 @@ function FontsAndStyles() {
         border:1px solid var(--line); border-radius:11px; font-family:'Archivo'; font-weight:700; font-size:13px;
         padding:9px 16px; cursor:pointer; }
       .hist-edit:active { transform:scale(.98); border-color:var(--accent); color:var(--accent); }
-      .hist-share { display:flex; align-items:center; gap:6px; background:var(--accent); color:#101200; border:none;
+      .hist-share { display:flex; align-items:center; gap:6px; background:var(--accent); color:#071019; border:none;
         border-radius:11px; font-family:'Archivo'; font-weight:700; font-size:13px; padding:9px 16px; cursor:pointer; }
       .hist-share:active { transform:scale(.98); }
-      .hist-share svg { color:#101200; }
+      .hist-share svg { color:#071019; }
 
       /* HISTORY */
       .hist-card { background:var(--surface); border:1px solid var(--line); border-radius:14px; margin-bottom:11px; overflow:hidden; }
@@ -3669,7 +3826,7 @@ function FontsAndStyles() {
       .cal-cell.has .cal-num { color:var(--text); font-weight:700; }
       .cal-cell.today { box-shadow:inset 0 0 0 1.5px var(--accent); }
       .cal-cell.today .cal-num { color:var(--accent); }
-      .cal-cell.sel { border-color:var(--accent); background:rgba(216,255,54,.1); }
+      .cal-cell.sel { border-color:var(--accent); background:rgba(55,138,221,.1); }
       .cal-cell:active.has { transform:scale(.93); }
       .cal-dots { display:flex; gap:3px; height:6px; align-items:center; }
       .cal-dots i { width:6px; height:6px; border-radius:99px; display:block; }
@@ -3698,7 +3855,7 @@ function FontsAndStyles() {
       .meal-date { text-align:center; display:flex; flex-direction:column; gap:2px; }
       .meal-date strong { font-family:'Oswald'; font-weight:600; font-size:18px; }
       .meal-today { background:none; border:none; color:var(--accent); font-family:'Space Mono',monospace; font-size:11px; cursor:pointer; }
-      .meal-cta { width:100%; display:flex; align-items:center; gap:8px; justify-content:center; background:rgba(216,255,54,.08);
+      .meal-cta { width:100%; display:flex; align-items:center; gap:8px; justify-content:center; background:rgba(55,138,221,.08);
         border:1px solid var(--accent); color:var(--accent); font-family:'Archivo'; font-weight:600; font-size:12.5px;
         padding:11px; border-radius:11px; cursor:pointer; margin-bottom:14px; }
       .meal-cta svg { flex-shrink:0; }
@@ -3754,7 +3911,7 @@ function FontsAndStyles() {
       .slot-save:active { color:var(--accent); border-color:var(--accent); }
       .slot-add { display:flex; align-items:center; gap:5px; background:var(--surface2); border:1px solid var(--line);
         color:var(--accent); font-family:'Archivo'; font-weight:600; font-size:12px; padding:6px 11px; border-radius:99px; cursor:pointer; }
-      .slot-add:active { background:var(--accent); color:#101200; }
+      .slot-add:active { background:var(--accent); color:#071019; }
       .meal-list { display:flex; flex-direction:column; gap:9px; }
       .meal-row { display:flex; align-items:center; gap:10px; background:var(--surface); border:1px solid var(--line);
         border-radius:13px; padding:12px 13px; margin-bottom:7px; }
@@ -3778,7 +3935,7 @@ function FontsAndStyles() {
         border-radius:11px; padding:0 12px; }
       .scan-btn { width:48px; flex-shrink:0; background:var(--surface2); border:1px solid var(--line); border-radius:11px;
         color:var(--accent); display:flex; align-items:center; justify-content:center; cursor:pointer; }
-      .scan-btn:active { background:var(--accent); color:#101200; }
+      .scan-btn:active { background:var(--accent); color:#071019; }
       .food-hint { margin:8px 2px 0; font-size:11px; color:var(--muted); line-height:1.5; }
 
       /* BARCODE SCANNER OVERLAY — full screen so the camera view is large */
@@ -3805,7 +3962,7 @@ function FontsAndStyles() {
       .scan-torch { position:absolute; top:10px; right:10px; width:40px; height:40px; border-radius:99px;
         background:rgba(0,0,0,.5); border:1px solid rgba(255,255,255,.3); color:#fff; display:flex; align-items:center;
         justify-content:center; cursor:pointer; }
-      .scan-torch.on { background:var(--accent); color:#101200; border-color:var(--accent); }
+      .scan-torch.on { background:var(--accent); color:#071019; border-color:var(--accent); }
       .scan-notice { background:var(--surface2); border:1px solid var(--line); color:var(--text); border-radius:10px;
         padding:10px 12px; font-size:12.5px; line-height:1.5; }
       .scan-err { background:rgba(255,90,77,.1); border:1px solid var(--danger); color:var(--danger); border-radius:10px;
@@ -3849,17 +4006,17 @@ function FontsAndStyles() {
       .seg { display:flex; gap:6px; background:var(--surface2); border:1px solid var(--line); border-radius:11px; padding:4px; margin-bottom:11px; }
       .seg button { flex:1; background:none; border:none; color:var(--muted); font-family:'Oswald'; font-weight:600; font-size:14px;
         padding:9px; border-radius:8px; cursor:pointer; }
-      .seg button.seg-on { background:var(--accent); color:#101200; }
+      .seg button.seg-on { background:var(--accent); color:#071019; }
       .prof-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:9px; }
       .prof-grid .field-label { display:block; margin-bottom:4px; }
       .goal-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; }
       .goal-pill { background:var(--surface2); border:1px solid var(--line); color:var(--text); font-family:'Oswald';
         font-weight:600; font-size:15px; padding:13px; border-radius:11px; cursor:pointer; transition:all .15s; }
-      .goal-pill.goal-on { background:var(--accent); color:#101200; border-color:var(--accent); }
+      .goal-pill.goal-on { background:var(--accent); color:#071019; border-color:var(--accent); }
       .prof-targets-head { display:flex; align-items:center; justify-content:space-between; }
 
       /* ONBOARDING */
-      .onb-targets { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; background:rgba(216,255,54,.08);
+      .onb-targets { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; background:rgba(55,138,221,.08);
         border:1px solid var(--accent); border-radius:12px; padding:12px 14px; margin-top:4px; }
       .onb-targets span { font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); }
       .onb-targets strong { font-family:'Space Mono',monospace; font-size:20px; font-weight:700; color:var(--accent); }
@@ -3877,7 +4034,7 @@ function FontsAndStyles() {
       .onb-go { display:inline-block; margin-top:14px; font-family:'Oswald'; font-weight:600; font-size:14px;
         letter-spacing:.03em; color:var(--accent); }
       .onb-tag { position:absolute; top:14px; right:14px; font-family:'Space Mono',monospace; font-size:10px; font-weight:700;
-        letter-spacing:.04em; background:var(--accent); color:#101200; padding:3px 8px; border-radius:6px; }
+        letter-spacing:.04em; background:var(--accent); color:#071019; padding:3px 8px; border-radius:6px; }
 
       /* PROGRAM EDITOR */
       .train-head { display:flex; align-items:center; justify-content:space-between; margin:14px 4px 14px; }
@@ -3913,8 +4070,8 @@ function FontsAndStyles() {
       .sets-step span { font-family:'Space Mono',monospace; font-size:13px; font-weight:700; min-width:54px; text-align:center; }
       .sets-step i { color:var(--muted); font-style:normal; font-weight:400; font-size:11px; }
       .add-day-btn { width:100%; display:flex; align-items:center; justify-content:center; gap:8px; background:var(--accent);
-        color:#101200; border:none; border-radius:13px; font-family:'Oswald'; font-weight:700; font-size:15px; letter-spacing:.03em;
-        padding:14px; cursor:pointer; box-shadow:0 8px 24px rgba(216,255,54,.16); }
+        color:#071019; border:none; border-radius:13px; font-family:'Oswald'; font-weight:700; font-size:15px; letter-spacing:.03em;
+        padding:14px; cursor:pointer; box-shadow:0 8px 24px rgba(55,138,221,.16); }
       .add-day-btn:active { transform:scale(.99); }
 
       .fade-in { animation:fade .4s ease; }

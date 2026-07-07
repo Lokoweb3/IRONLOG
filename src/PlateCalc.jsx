@@ -12,7 +12,7 @@ const BARS = [45, 35, 25];
 
 // visual size + color per plate weight (lbs). Height in px for the side view.
 const PLATE_LOOK = {
-  45: { h: 84, c: "#d8ff36" },
+  45: { h: 84, c: "#378add" },
   35: { h: 72, c: "#46d9ff" },
   25: { h: 60, c: "#ffb13e" },
   10: { h: 44, c: "#ff6fd0" },
@@ -122,12 +122,12 @@ const PC_CSS = `
   .pc-bars { display:flex; align-items:center; gap:7px; padding-bottom:4px; }
   .pc-bar-pill { background:var(--surface2); border:1px solid var(--line); color:var(--muted);
     font-family:'Space Mono',monospace; font-size:14px; padding:8px 13px; border-radius:999px; cursor:pointer; }
-  .pc-bar-pill.pc-on { background:var(--accent); border-color:var(--accent); color:#101200; font-weight:700; }
+  .pc-bar-pill.pc-on { background:var(--accent); border-color:var(--accent); color:#071019; font-weight:700; }
   .pc-visual { display:flex; align-items:center; gap:3px; min-height:104px; margin:16px 0 4px;
     padding:0 10px; overflow-x:auto; }
   .pc-sleeve { width:14px; height:12px; border-radius:3px; background:var(--line); flex:none; }
   .pc-plate { flex:none; width:22px; border-radius:5px; display:flex; align-items:center; justify-content:center;
-    color:#101200; font-family:'Space Mono',monospace; font-size:9px; font-weight:700;
+    color:#071019; font-family:'Space Mono',monospace; font-size:9px; font-weight:700;
     writing-mode:vertical-rl; text-orientation:mixed; }
   .pc-shaft { flex:1; height:8px; background:var(--line); border-radius:4px; position:relative; min-width:60px;
     display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:10px;
