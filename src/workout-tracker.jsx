@@ -1182,6 +1182,12 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
   const focusedIdx = focusedEx ? exs.findIndex((e) => e.key === focusedEx.key) : -1;
   const nextEx = focusedIdx >= 0 ? exs[focusedIdx + 1] || null : null;
 
+  // Which SET owns the logger tiles: a manually-tapped pip wins, else the first
+  // unlogged set, else the last. Cleared whenever the focused exercise changes
+  // or a set is (un)logged, so the HUD auto-advances.
+  const [setSel, setSetSel] = useState(null);
+  useEffect(() => { setSetSel(null); }, [focusedEx?.key]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // One exercise card — identical internals in both modes; `inFocus` only
   // adds the supersized-for-the-gym styling hooks.
   const renderExCard = (ex, ei, inFocus) => {
@@ -1302,6 +1308,152 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
     );
   };
 
+  // Focus-mode HUD: hero header + one SET at a time with giant tiles and a
+  // single Log action. Same data operations as the card — different shell.
+  const renderFocusHud = () => {
+    const ex = focusedEx;
+    const last = lastPerformance(sessions, ex.name, ex.variation, active.id);
+    const curBest = bestSetE1rm(ex.sets);
+    const histBest = historicalBestE1rm(sessions, ex.name, ex.variation, active.id);
+    const isPR = curBest > 0 && curBest > histBest;
+    const sets = ex.sets;
+    const firstOpen = sets.findIndex((st) => !st.done);
+    const curIdx = setSel != null && setSel < sets.length
+      ? setSel
+      : (firstOpen !== -1 ? firstOpen : sets.length - 1);
+    const cur = sets[curIdx];
+    const lastTop = last?.sets?.[0];
+    // suggested numbers, shown as placeholders only (never auto-logged)
+    const phW = (curIdx > 0 && sets[curIdx - 1].w !== "" ? sets[curIdx - 1].w : last?.sets?.[curIdx]?.w) || "lbs";
+    const phR = last?.sets?.[curIdx]?.r || "reps";
+    const round1 = (n) => Math.round(n * 10) / 10;
+
+    return (
+      <div className="hud fade-in">
+        <div className="hud-top">
+          <span>{active.tag || "DAY"} · {editing ? "EDITING" : "LIVE"}</span>
+          <span>{doneSets}/{totalSets} SETS</span>
+        </div>
+
+        <div className="hud-hero">
+          <div className="hud-eyebrow">EXERCISE {focusedIdx + 1} OF {exs.length}</div>
+          <h2 className="hud-name">{ex.name}</h2>
+          <div className="hud-chips">
+            {ex.variations.length > 0 && (
+              <button
+                className="hud-chip hud-chip-var"
+                title="switch variation"
+                onClick={() => setVariation(
+                  ex.key,
+                  ex.variations[(Math.max(0, ex.variations.indexOf(ex.variation)) + 1) % ex.variations.length]
+                )}
+              >{ex.variation || ex.variations[0]}</button>
+            )}
+            {lastTop && <span className="hud-chip hud-chip-last">last {lastTop.w || "–"}×{lastTop.r || "–"}</span>}
+            {isPR && <span className="pace-chip">PR pace</span>}
+          </div>
+        </div>
+
+        {cur && (
+          <div className="hud-logger">
+            <div className="hud-tiles">
+              <label className="hud-tile">
+                <span>LBS</span>
+                <input
+                  inputMode="decimal" enterKeyHint="done" placeholder={String(phW)}
+                  value={cur.w} onChange={(e) => setField(ex.key, curIdx, "w", e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                />
+              </label>
+              <label className="hud-tile">
+                <span>REPS</span>
+                <input
+                  inputMode="numeric" enterKeyHint="done" placeholder={String(phR)}
+                  value={cur.r} onChange={(e) => setField(ex.key, curIdx, "r", e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                />
+              </label>
+            </div>
+
+            <div className="hud-mid">
+              <div className="hud-setpips">
+                {sets.map((st, i) => (
+                  <button
+                    key={i}
+                    className={`setpip ${st.done ? "setpip-done" : ""} ${i === curIdx ? "setpip-cur" : ""}`}
+                    onClick={() => setSetSel(i)}
+                    aria-label={`set ${i + 1}${st.done ? ", logged" : ""}`}
+                  >{st.done ? <Check size={14} /> : i + 1}</button>
+                ))}
+                <button className="setpip setpip-add" onClick={() => addSet(ex.key)} aria-label="add a set">
+                  <Plus size={14} />
+                </button>
+              </div>
+              {curBest > 0 && (
+                <span className="hud-e1rm">
+                  e1RM {histBest > 0 ? round1(histBest) : "—"} → <b className={isPR ? "e1rm-up" : ""}>{round1(curBest)}</b>
+                </span>
+              )}
+            </div>
+
+            <button
+              className={`hud-log ${cur.done ? "hud-log-undo" : ""}`}
+              onClick={() => { toggleDone(ex.key, curIdx); setSetSel(null); }}
+            >
+              {cur.done ? `Undo set ${curIdx + 1}` : `Log set ${curIdx + 1}`}
+            </button>
+
+            <div className="hud-aux">
+              <button onClick={() => {
+                const typed = [...sets].reverse().find((st) => st.w !== "")?.w;
+                setPlateTarget({ value: (cur.w || typed || lastTop?.w) ?? "" });
+              }}>
+                <Disc size={14} /> Plates
+              </button>
+              <button onClick={() => setHelp({ name: ex.name, variation: ex.variation })}>
+                <PlayCircle size={14} /> How-to
+              </button>
+            </div>
+
+            <input
+              className="ex-note hud-note"
+              placeholder="＋ note (form cue, pain, tempo…)"
+              value={ex.note || ""}
+              onChange={(e) => setExNote(ex.key, e.target.value)}
+            />
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // date + session-note rows — rendered up top in list mode, below the HUD in
+  // focus mode (same nodes, so nothing here changes behavior)
+  const sessionMeta = (
+    <>
+      <div className="date-row">
+        <label className="date-field">
+          <CalendarDays size={16} />
+          <span className="date-text">{fmtDateTime(active.startedAt)}</span>
+          <input
+            type="datetime-local"
+            className="date-input"
+            value={tsToLocalInput(active.startedAt)}
+            onChange={(e) => setDate(e.target.value)}
+          />
+        </label>
+      </div>
+      <div className="note-row">
+        <textarea
+          className="session-note" rows={2}
+          placeholder="Session notes — how it felt, energy, injuries…"
+          value={active.note || ""}
+          onChange={(e) => setNote(e.target.value)}
+        />
+      </div>
+    </>
+  );
+
   return (
     <div className="session">
       <header className="session-head">
@@ -1324,50 +1476,25 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
         <RestTimer autoSignal={restSignal} />
       </header>
 
-      <div className="progress-wrap">
-        <div className="progress-bar"><div className="progress-fill" style={{ width: `${pct}%` }} /></div>
-        <span className="progress-txt">{doneSets}/{totalSets} sets</span>
-      </div>
+      {(mode === "list" || !focusedEx) && (
+        <div className="progress-wrap">
+          <div className="progress-bar"><div className="progress-fill" style={{ width: `${pct}%` }} /></div>
+          <span className="progress-txt">{doneSets}/{totalSets} sets</span>
+        </div>
+      )}
 
-      <div className="date-row">
-        <label className="date-field">
-          <CalendarDays size={16} />
-          <span className="date-text">{fmtDateTime(active.startedAt)}</span>
-          <input
-            type="datetime-local"
-            className="date-input"
-            value={tsToLocalInput(active.startedAt)}
-            onChange={(e) => setDate(e.target.value)}
-          />
-        </label>
-      </div>
-
-      <div className="note-row">
-        <textarea
-          className="session-note" rows={2}
-          placeholder="Session notes — how it felt, energy, injuries…"
-          value={active.note || ""}
-          onChange={(e) => setNote(e.target.value)}
-        />
-      </div>
+      {(mode === "list" || !focusedEx) && sessionMeta}
 
       <main className="session-body">
         {mode === "list" || !focusedEx ? (
           exs.map((ex, ei) => renderExCard(ex, ei, false))
         ) : (
           <>
-            <div className="hud-strip fade-in">
-              <span className="hud-label">EXERCISE {focusedIdx + 1} OF {exs.length}</span>
-              <span className="hud-pips" aria-hidden="true">
-                {focusedEx.sets.map((st, i) => <i key={i} className={st.done ? "pip-on" : ""} />)}
-              </span>
-            </div>
-
-            {renderExCard(focusedEx, focusedIdx, true)}
+            {renderFocusHud()}
 
             {nextEx && (
               <button className="next-ex-btn" onClick={() => setFocusKey(nextEx.key)}>
-                NEXT ▸ {nextEx.name} · {nextEx.sets.length} set{nextEx.sets.length === 1 ? "" : "s"}
+                NEXT ▸ {nextEx.name} · {nextEx.sets.length} SET{nextEx.sets.length === 1 ? "" : "S"}
               </button>
             )}
 
@@ -1381,6 +1508,9 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
                 </button>
               ))}
             </div>
+
+            {/* session-level date + notes tuck below the HUD flow in focus mode */}
+            <div className="hud-session-meta">{sessionMeta}</div>
           </>
         )}
         <div style={{ height: 96 }} />
@@ -1628,7 +1758,10 @@ function RestTimer({ autoSignal = 0 }) {
                 transform="rotate(-90 24 24)"
               />
             </svg>
-            <span className={`timer-count ${remaining >= 600 ? "timer-count-sm" : ""}`}>{mmss}</span>
+            <span className={`timer-count ${remaining >= 600 ? "timer-count-sm" : ""}`}>
+              {mmss}
+              <i className="timer-sub">REST</i>
+            </span>
           </span>
         ) : <Timer size={20} />}
       </button>
@@ -3489,9 +3622,12 @@ function FontsAndStyles() {
       .ring-track { fill:none; stroke:var(--surface2); stroke-width:4; }
       .ring-arc { fill:none; stroke:var(--accent); stroke-width:4; stroke-linecap:round;
         transition:stroke-dashoffset .25s linear; }
-      .timer-ring .timer-count { position:absolute; inset:0; display:flex; align-items:center;
-        justify-content:center; font-size:12px; color:var(--text); }
+      .timer-ring .timer-count { position:absolute; inset:0; display:flex; flex-direction:column;
+        align-items:center; justify-content:center; gap:1px; line-height:1;
+        font-size:12px; color:var(--text); }
       .timer-ring .timer-count.timer-count-sm { font-size:10px; letter-spacing:0; }
+      .timer-sub { font-style:normal; font-size:6.5px; font-weight:700; letter-spacing:.18em;
+        color:var(--muted); }
 
       .session-title { flex:1; display:flex; align-items:center; gap:10px; min-width:0; }
       .session-title h2 { font-size:18px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -3514,22 +3650,63 @@ function FontsAndStyles() {
       .session-body { flex:1; padding:6px 14px 0; }
       .ex-card { background:var(--surface); border:1px solid var(--line); border-radius:15px; padding:15px; margin-bottom:13px; }
 
-      /* FOCUS MODE — one exercise owns the screen */
+      /* FOCUS MODE — one SET owns the screen (HUD) */
       .mode-toggle { border-radius:50%; }
-      .hud-strip { display:flex; align-items:center; justify-content:space-between; gap:12px;
-        padding:2px 4px 10px; }
-      .hud-label { font-family:'Space Mono',monospace; font-size:11px; font-weight:700;
+      .hud-top { display:flex; align-items:center; justify-content:space-between;
+        padding:6px 4px 14px; font-family:'Space Mono',monospace; font-size:11px; font-weight:700;
+        letter-spacing:.22em; color:var(--muted); }
+      .hud-hero { padding:0 4px 14px; }
+      .hud-eyebrow { font-family:'Space Mono',monospace; font-size:11px; font-weight:700;
         letter-spacing:.18em; color:var(--muted); }
-      .hud-pips { display:flex; gap:5px; }
-      .hud-pips i { width:20px; height:5px; border-radius:3px; background:var(--surface2);
-        transition:background .2s; }
-      .hud-pips i.pip-on { background:var(--accent); }
-      .ex-focus { border-color:rgba(55,138,221,.5);
-        box-shadow:0 0 0 1px rgba(55,138,221,.22), 0 12px 34px rgba(0,0,0,.35); }
-      .ex-focus .set-input { font-size:20px; font-weight:700; padding:15px 4px; }
-      .ex-focus .check { width:46px; height:46px; border-radius:50%; }
-      .ex-focus .del-set { height:46px; }
-      .next-ex-btn { width:100%; background:none; border:1px dashed var(--line); color:var(--muted);
+      .hud-name { margin:6px 0 10px; font-family:'Oswald'; font-weight:600; font-size:30px;
+        line-height:1.1; }
+      .hud-chips { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+      .hud-chip { border-radius:9px; padding:7px 12px; font-family:'Archivo'; font-size:13px;
+        font-weight:600; border:1px solid var(--line); }
+      .hud-chip-var { background:rgba(55,138,221,.14); border-color:rgba(55,138,221,.4);
+        color:var(--accent-2); cursor:pointer; }
+      .hud-chip-last { background:var(--surface); color:var(--muted);
+        font-family:'Space Mono',monospace; font-size:12px; }
+      .hud-logger { background:var(--surface); border:1px solid var(--line); border-radius:18px;
+        padding:16px; }
+      .hud-tiles { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+      .hud-tile { display:flex; flex-direction:column; align-items:center; gap:2px;
+        background:var(--surface2); border:1px solid var(--line); border-radius:14px;
+        padding:14px 8px 10px; }
+      .hud-tile:focus-within { border-color:var(--accent); }
+      .hud-tile span { font-family:'Space Mono',monospace; font-size:10px; font-weight:700;
+        letter-spacing:.22em; color:var(--muted); }
+      .hud-tile input { width:100%; background:none; border:none; outline:none; text-align:center;
+        color:var(--text); font-family:'Space Mono',monospace; font-size:34px; font-weight:700; }
+      .hud-tile input::placeholder { color:#4a5260; }
+      .hud-mid { display:flex; align-items:center; justify-content:space-between; gap:10px;
+        margin:14px 0; flex-wrap:wrap; }
+      .hud-setpips { display:flex; gap:8px; flex-wrap:wrap; }
+      .setpip { width:38px; height:38px; border-radius:50%; display:flex; align-items:center;
+        justify-content:center; background:none; border:1.5px solid var(--line); color:var(--muted);
+        font-family:'Space Mono',monospace; font-size:14px; font-weight:700; cursor:pointer; }
+      .setpip-cur { border-color:var(--accent); color:var(--accent); }
+      .setpip-done { background:var(--accent); border-color:var(--accent); color:#071019; }
+      .setpip-add { border-style:dashed; }
+      .hud-e1rm { font-family:'Space Mono',monospace; font-size:12.5px; color:var(--muted); }
+      .hud-e1rm b { color:var(--text); font-weight:700; }
+      .hud-e1rm b.e1rm-up { color:var(--accent-2); }
+      .hud-log { width:100%; background:var(--accent); color:#071019; border:none; border-radius:14px;
+        font-family:'Archivo'; font-size:17px; font-weight:700; padding:16px; cursor:pointer;
+        box-shadow:0 8px 24px rgba(55,138,221,.22); }
+      .hud-log:active { transform:scale(.99); }
+      .hud-log-undo { background:var(--surface2); color:var(--muted); border:1px solid var(--line);
+        box-shadow:none; }
+      .hud-aux { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px; }
+      .hud-aux button { display:flex; align-items:center; justify-content:center; gap:7px;
+        background:var(--surface2); border:1px solid var(--line); color:var(--text);
+        font-family:'Archivo'; font-size:14px; font-weight:600; padding:12px; border-radius:12px;
+        cursor:pointer; }
+      .hud-aux button:active { border-color:var(--accent); color:var(--accent); }
+      .hud-note { margin-top:10px; }
+      .hud-session-meta { margin-top:16px; }
+      .hud-session-meta .date-row, .hud-session-meta .note-row { padding-left:0; padding-right:0; }
+      .next-ex-btn { width:100%; background:none; border:1px dashed var(--line); color:var(--muted); text-transform:uppercase;
         font-family:'Space Mono',monospace; font-size:12px; font-weight:700; letter-spacing:.08em;
         padding:13px 15px; border-radius:12px; cursor:pointer; margin-bottom:13px; text-align:left;
         white-space:nowrap; overflow:hidden; text-overflow:ellipsis; transition:border-color .15s, color .15s; }
