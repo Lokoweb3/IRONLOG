@@ -154,6 +154,9 @@ function publicUser(row) {
     email: row.email,
     name: row.name,
     picture: row.picture,
+    // throwaway try-it-out accounts (see server/demo.js) — the frontend shows a
+    // "sample data resets in 24h" banner for these
+    demo: !!(row.google_sub && row.google_sub.startsWith("demo:")),
   };
 }
 
@@ -189,6 +192,15 @@ export function findOrCreateUser({ sub, email, name, picture }) {
 
 export function getUserById(id) {
   return publicUser(_getUserById.get(id));
+}
+
+// Opportunistic cleanup of expired demo accounts (called on each demo sign-in).
+// One statement; ON DELETE CASCADE removes all their data.
+const _purgeDemoUsers = db.prepare(
+  "DELETE FROM users WHERE google_sub LIKE 'demo:%' AND created_at < ?"
+);
+export function purgeDemoUsersBefore(cutoffMs) {
+  return _purgeDemoUsers.run(cutoffMs).changes;
 }
 
 const _deleteUser = db.prepare("DELETE FROM users WHERE id = ?");
@@ -242,6 +254,19 @@ const _getWorkout = db.prepare(
 
 export function listWorkouts(userId) {
   return _listWorkouts.all(userId).map(rowToSession);
+}
+
+const _listWorkoutsPage = db.prepare(
+  "SELECT * FROM workouts WHERE user_id = ? ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?"
+);
+const _countWorkouts = db.prepare("SELECT COUNT(*) AS n FROM workouts WHERE user_id = ?");
+
+// One page of workouts (newest first) for GET /workouts?limit=&offset=.
+export function listWorkoutsPage(userId, limit, offset) {
+  return _listWorkoutsPage.all(userId, limit, offset).map(rowToSession);
+}
+export function countWorkouts(userId) {
+  return _countWorkouts.get(userId).n;
 }
 
 // Insert or update a single session (keyed by client id). Returns the session.

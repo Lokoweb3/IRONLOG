@@ -55,6 +55,7 @@ const foodsLimiter = rateLimit({
 // --- API routes ---
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 app.use("/auth/google", authLimiter);
+app.use("/auth/demo", authLimiter);  // demo accounts share the sign-in budget
 app.use("/foods", foodsLimiter);
 app.use("/auth", authRouter);
 app.use("/workouts", requireAuth, workoutsRouter); // every workout route is protected

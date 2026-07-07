@@ -5,9 +5,11 @@ import {
   ChevronLeft, Trash2, Flame, ChevronDown, ChevronRight, ChevronUp, Play, Pause, RotateCcw,
   CalendarDays, Volume2, VolumeX, Trophy, Download, Upload,
   LogOut, ListChecks, Pencil, UtensilsCrossed, Search, Target, Scale, ScanLine, Camera, Flashlight, Star, PlayCircle,
-  Copy, Save, BookOpen, Share2
+  Copy, Save, BookOpen, Share2, Disc
 } from "lucide-react";
 import { api } from "./api.js";
+import { e1rm, bestSetE1rm, historicalBestE1rm } from "./lib/stats.js";
+import PlateCalc from "./PlateCalc.jsx";
 
 // recharts is heavy and only used on Progress/Profile — load it as a separate
 // chunk on demand so it stays out of the initial bundle.
@@ -82,25 +84,6 @@ function tsToLocalInput(ts) {
 const localInputToTs = (str) => new Date(str).getTime();
 const fmtRest = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
 
-// estimated 1-rep max (Epley formula)
-const e1rm = (w, r) => {
-  const W = parseFloat(w) || 0, R = parseFloat(r) || 0;
-  if (!W || !R) return 0;
-  return W * (1 + R / 30);
-};
-const bestSetE1rm = (sets) => sets.reduce((m, s) => Math.max(m, e1rm(s.w, s.r)), 0);
-function historicalBestE1rm(sessions, name, variation, excludeId) {
-  let best = 0;
-  for (const s of sessions) {
-    if (s.id === excludeId) continue;
-    for (const ex of s.exercises) {
-      if (ex.name !== name) continue;
-      if (variation != null && ex.variation !== variation) continue;
-      best = Math.max(best, bestSetE1rm(ex.sets));
-    }
-  }
-  return best;
-}
 const fmtDateTime = (ts) =>
   new Date(ts).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
@@ -491,6 +474,12 @@ export default function App() {
         </button>
       )}
 
+      {user.demo && (
+        <div className="demo-banner">
+          You're in a demo account with sample data — it resets after 24 hours.
+        </div>
+      )}
+
       {dataLoading ? (
         <div className="loader"><Dumbbell size={28} /><span>Loading your log…</span></div>
       ) : active ? (
@@ -625,6 +614,29 @@ function GoogleSignIn({ onLogin }) {
   );
 }
 
+// "Try the demo" — creates a throwaway, pre-seeded account (no Google needed).
+function DemoButton({ onLogin }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const go = async () => {
+    setBusy(true); setErr("");
+    try {
+      onLogin(await api.demoLogin());
+    } catch {
+      setErr("Couldn't start the demo — please try again.");
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="demo-cta">
+      <button className="demo-btn" onClick={go} disabled={busy}>
+        <Play size={14} /> {busy ? "Setting up your demo…" : "Try the demo — no sign-in"}
+      </button>
+      {err && <div className="login-err">{err}</div>}
+    </div>
+  );
+}
+
 /* ================================================================== */
 /*  LANDING  (marketing page for logged-out visitors)                  */
 /* ================================================================== */
@@ -644,6 +656,7 @@ function Landing({ onLogin }) {
         <p className="lp-tag">Your gym and your kitchen, in one app.</p>
         <p className="lp-sub">Log workouts, track macros, and watch your strength and weight trend — free, on every device.</p>
         <div className="lp-cta"><GoogleSignIn onLogin={onLogin} /></div>
+        <DemoButton onLogin={onLogin} />
         <p className="login-note" style={{ maxWidth: 320 }}>Sign in with Google — we only use it to identify your account. Your data is private and synced across your devices.</p>
       </header>
 
@@ -1041,6 +1054,7 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [restSignal, setRestSignal] = useState(0);
   const [help, setHelp] = useState(null); // { name, variation } for the form-guide modal
+  const [plateTarget, setPlateTarget] = useState(null); // pre-fill weight for the plate calc sheet
   const editing = !!active._editing; // re-opened from History to fix a past workout
 
   const update = (mut) => setActive((prev) => {
@@ -1145,6 +1159,19 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
                 <button className="howto-btn" onClick={() => setHelp({ name: ex.name, variation: ex.variation })} title="How to perform this exercise">
                   <PlayCircle size={13} /> How-to
                 </button>
+                <button
+                  className="howto-btn"
+                  title="Plate loading for this weight"
+                  onClick={() => {
+                    // pre-fill from the working weight: last set with one entered,
+                    // else what was lifted last time
+                    const cur = [...ex.sets].reverse().find((st) => st.w !== "")?.w;
+                    const prev = last && [...last.sets].reverse().find((st) => st.w !== "")?.w;
+                    setPlateTarget({ value: cur ?? prev ?? "" });
+                  }}
+                >
+                  <Disc size={13} /> Plates
+                </button>
               </div>
 
               {ex.variations.length > 0 && (
@@ -1242,6 +1269,7 @@ function ActiveSession({ active, setActive, sessions, onFinish, onCancel }) {
       )}
 
       {help && <ExerciseHelp name={help.name} variation={help.variation} onClose={() => setHelp(null)} />}
+      {plateTarget && <PlateCalc initialTarget={plateTarget.value} onClose={() => setPlateTarget(null)} />}
     </div>
   );
 }
@@ -3161,6 +3189,10 @@ function FontsAndStyles() {
         box-shadow:0 4px 16px rgba(0,0,0,.4); }
       .update-banner svg { color:#101200; }
 
+      .demo-banner { width:100%; text-align:center; background:rgba(216,255,54,.08);
+        border-bottom:1px solid rgba(216,255,54,.25); color:var(--accent);
+        font-family:'Archivo'; font-size:12px; font-weight:600; padding:7px 14px; }
+
       /* LOGIN */
       .login { min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center;
         padding:calc(30px + env(safe-area-inset-top)) 24px calc(30px + env(safe-area-inset-bottom)); max-width:460px; margin:0 auto; }
@@ -3211,6 +3243,13 @@ function FontsAndStyles() {
       .lp-tag { margin:14px 0 0; font-family:'Oswald'; font-weight:600; font-size:22px; color:var(--text); line-height:1.25; max-width:360px; }
       .lp-sub { margin:10px 0 0; font-size:14px; line-height:1.6; color:var(--muted); max-width:360px; }
       .lp-cta { margin:24px 0 10px; }
+      .demo-cta { margin:0 0 16px; display:flex; flex-direction:column; align-items:center; gap:6px; }
+      .demo-btn { display:flex; align-items:center; gap:8px; background:var(--surface2);
+        border:1px solid var(--line); color:var(--text); font-family:'Archivo'; font-weight:600;
+        font-size:14px; padding:11px 22px; border-radius:999px; cursor:pointer; transition:all .15s; }
+      .demo-btn:hover, .demo-btn:active { border-color:var(--accent); color:var(--accent); }
+      .demo-btn:disabled { opacity:.6; cursor:default; }
+      .demo-btn svg { color:var(--accent); }
       .lp-features { display:grid; gap:12px; margin:34px 0 0; }
       .lp-card { background:linear-gradient(150deg, var(--surface2), var(--surface)); border:1px solid var(--line);
         border-radius:16px; padding:18px; }

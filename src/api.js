@@ -64,6 +64,13 @@ export const api = {
     return data.user;
   },
 
+  // Create a throwaway pre-seeded demo account and sign into it; returns the
+  // user (carries demo:true). The sample account is purged after 24 hours.
+  async demoLogin() {
+    const data = await request("POST", "/auth/demo");
+    return data.user;
+  },
+
   async logout() {
     await request("POST", "/auth/logout");
   },

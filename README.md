@@ -1,14 +1,24 @@
 # IRONLOG
 
-A full-stack **workout + nutrition tracker** with Google Sign-In and a synced backend, so
-each user's data lives on the server and follows them across devices. Installable PWA,
-deployed on Fly.io with continuous backups and CI/CD. **Live:** <https://lokoto-ironlog.fly.dev>
+Your gym and your kitchen, in one app. IRONLOG is a full-stack **workout + nutrition
+tracker**: log sets with a rest timer and PR detection, track calories and macros with
+barcode scanning, and watch your strength and body weight trend — synced across devices,
+installable as a PWA.
+
+**Live:** <https://lokoto-ironlog.fly.dev> — or hit **"Try the demo — no sign-in"** on the
+landing page for a throwaway account pre-loaded with a month of realistic training data
+(it resets after 24 hours). No Google account needed.
+
+<!-- TODO: screenshots — landing page, live session with rest timer, meals day view, progress charts -->
+
+Deployed on Fly.io with continuous backups and CI/CD. MIT-licensed ([LICENSE](LICENSE)).
 
 ### Features
 
 - **Auth** — Google Sign-In (GIS/FedCM); the server verifies the ID token and issues its own httpOnly session cookie.
 - **Onboarding** — a 2-step wizard: body stats + goal (auto-computes macro targets), then choose the default 4-day split or build a custom program. Re-runnable from Profile.
-- **Workouts** — editable per-user programs, set logging, rest timer (auto-rest, sound/vibrate), PR detection, estimated 1RM, calendar + history, per-lift strength trend charts.
+- **Workouts** — editable per-user programs, set logging, rest timer (auto-rest, sound/vibrate), PR detection, estimated 1RM, a per-exercise **plate calculator**, calendar + history, per-lift strength trend charts.
+- **Demo mode** — one tap creates a throwaway account seeded with a program, a month of progressing workout history, body-weight entries and today's meals; purged automatically after 24h.
 - **Exercise guides** — in-app form instructions + demo images (public-domain free-exercise-db), with a video-search fallback.
 - **Nutrition** — daily calories/macros vs auto-targets, grouped into **Breakfast/Lunch/Dinner/Snacks**; food **search** + **barcode lookup/scan** (Open Food Facts + USDA); servings or grams; **recent/favorites**, **saved meals (recipes)**, **copy-day**, and **edit/rescale** any entry.
 - **Body** — weight log + trend chart; goal-driven Mifflin–St Jeor macro targets.
@@ -19,7 +29,7 @@ deployed on Fly.io with continuous backups and CI/CD. **Live:** <https://lokoto-
 ### Stack
 
 - **Frontend:** Vite + React (`src/workout-tracker.jsx` is the whole UI), `lucide-react`, `recharts` (lazy), `@zxing/browser` (lazy, iOS barcode fallback)
-- **Backend:** Node + Express (`server/app.js` builds the app; `server/index.js` listens), with `helmet` + `express-rate-limit`
+- **Backend:** Node + Express (`server/app.js` builds the app; `server/index.js` listens), with `helmet` + `express-rate-limit`, request validation via `zod`
 - **Database:** SQLite via `better-sqlite3` — all SQL isolated in `server/db.js` (Postgres-swappable)
 - **Tests:** Node's built-in runner + `supertest` (`npm test`) · **CI/CD:** GitHub Actions runs tests/build and auto-deploys to Fly on push to `main`
 - **Backups:** Litestream → Fly Tigris (continuous, point-in-time)
@@ -40,15 +50,21 @@ deployed on Fly.io with continuous backups and CI/CD. **Live:** <https://lokoto-
 │   ├── run.sh                 # entrypoint: app under Litestream (or directly)
 │   └── generate-icons.mjs     # generates the PWA icons
 ├── public/                    # manifest, service worker (sw.js), icons
+├── docs/                      # VPS deployment guide, Windows cert troubleshooting
 ├── src/
 │   ├── main.jsx               # React entrypoint (+ build-hash for auto-update)
-│   ├── workout-tracker.jsx    # the entire UI
+│   ├── workout-tracker.jsx    # the main UI
+│   ├── PlateCalc.jsx          # plate-calculator bottom sheet (live session)
 │   ├── TrendChart.jsx         # lazy-loaded recharts chart
-│   └── api.js                 # fetch wrapper (with retries)
+│   ├── api.js                 # fetch wrapper (with retries)
+│   └── lib/
+│       └── stats.js(.test.js) # pure training math: e1rm, PRs, plate loading
 ├── server/
 │   ├── app.js                 # builds the Express app (importable for tests)
 │   ├── index.js               # starts the HTTP listener
 │   ├── auth.js                # GIS verify, session cookie, requireAuth, export/delete
+│   ├── demo.js                # demo accounts: create + seed + 24h purge
+│   ├── validation.js          # zod schema for workout payloads
 │   ├── workouts.js · programs.js · profile.js · meals.js · weights.js
 │   ├── foods.js               # food search/barcode proxy (OFF + USDA)
 │   ├── exercises.js(.json)    # exercise form-guide lookup + slimmed dataset
@@ -148,74 +164,10 @@ stay first-party. Put a reverse proxy with HTTPS in front of it (next section).
 
 ## 6. Deploy on a VPS
 
-A minimal, robust setup: **Node app behind Nginx (or Caddy) with HTTPS.**
-
-### a. Get the code + deps on the server
-
-```bash
-git clone <your repo> ironlog && cd ironlog
-npm ci
-cp .env.example .env   # then edit it with prod values
-npm run build
-```
-
-Make sure `.env` has your real `GOOGLE_CLIENT_ID`, `VITE_GOOGLE_CLIENT_ID`,
-`SESSION_SECRET`, and `PORT`. **Rebuild (`npm run build`) any time you change
-`VITE_GOOGLE_CLIENT_ID`**, since it's baked into the frontend bundle.
-
-### b. Keep it running with a process manager (PM2)
-
-```bash
-npm install -g pm2
-pm2 start "npm start" --name ironlog
-pm2 save
-pm2 startup            # follow the printed command so it survives reboots
-```
-
-(Alternatively, a systemd unit running `npm start` with `EnvironmentFile=/path/.env`.)
-
-### c. Reverse proxy + HTTPS
-
-**Option A — Caddy (automatic HTTPS):** `/etc/caddy/Caddyfile`
-
-```
-YOURDOMAIN {
-    reverse_proxy localhost:8080
-}
-```
-
-```bash
-sudo systemctl reload caddy
-```
-
-**Option B — Nginx + Certbot:** `/etc/nginx/sites-available/ironlog`
-
-```nginx
-server {
-    server_name YOURDOMAIN;
-    location / {
-        proxy_pass http://localhost:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-```bash
-sudo ln -s /etc/nginx/sites-available/ironlog /etc/nginx/sites-enabled/
-sudo certbot --nginx -d YOURDOMAIN   # provisions HTTPS automatically
-sudo systemctl reload nginx
-```
-
-The app sets `app.set("trust proxy", 1)` so it trusts `X-Forwarded-Proto` from your
-proxy — important for the `Secure` cookie to work correctly behind TLS termination.
-
-### d. Final Google console check
-
-Confirm `https://YOURDOMAIN` is in **Authorized JavaScript origins**, and that your
-OAuth consent screen is either **published** or lists every tester under **Test users**.
+The live app runs on Fly.io (next section), but self-hosting is a first-class option:
+a minimal, robust **Node app behind Nginx (or Caddy) with HTTPS**. The full walkthrough
+(PM2, reverse proxy, certificates, Google console checklist) lives in
+**[docs/vps-deploy.md](docs/vps-deploy.md)**.
 
 ---
 
@@ -249,14 +201,15 @@ All workout routes require the session cookie (set after `POST /auth/google`).
 | Method & path | Body | Returns |
 |---------------|------|---------|
 | `POST /auth/google` | `{ credential }` (GIS ID token) | `{ user }` + sets cookie |
+| `POST /auth/demo` | – | `{ user }` (with `demo:true`) + sets cookie — creates a throwaway pre-seeded account; demo accounts >24h old are purged on each call. Shares `/auth/google`'s rate limit. |
 | `POST /auth/logout` | – | `{ ok: true }`, clears cookie |
 | `GET /auth/me` | – | `{ user }` or `401` |
 | `GET /auth/export` | – | full JSON export of all the user's data |
 | `DELETE /auth/account` | – | deletes the account + all data (cascade), clears cookie |
-| `GET /workouts` | – | array of sessions, newest first |
-| `POST /workouts` | a session object | `{ workout }` |
+| `GET /workouts` | – | array of sessions, newest first. Optional `?limit=1..500&offset=` returns one page; `X-Total-Count` header always carries the total |
+| `POST /workouts` | a session object | `{ workout }` — payload validated with zod (unknown keys stripped, sizes bounded); `400` with a field-level message on failure |
 | `DELETE /workouts/:id` | – | `{ ok: true }` (only your own) |
-| `POST /workouts/import` | `{ sessions: [...] }` | `{ added, total }` (merge, never wipe) |
+| `POST /workouts/import` | `{ sessions: [...] }` | `{ added, skipped, total }` (merge, never wipe; invalid rows are skipped, not fatal) |
 | `GET /program` | – | `{ days, onboarded }` (no auto-seed; `onboarded:false` for new users) |
 | `PUT /program` | `{ days: [...] }` | `{ days }` (save the user's edited program) |
 | `POST /program/reset` | – | `{ days }` (restore the default program) |
@@ -343,48 +296,10 @@ which merges by id without wiping anything.
 
 ## 10. Troubleshooting: `UNABLE_TO_VERIFY_LEAF_SIGNATURE` / cert errors
 
-If `npm install` fails with `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, or sign-in fails with
-`request to https://www.googleapis.com/oauth2/v1/certs failed ... unable to verify the
-first certificate`, then **antivirus or a corporate proxy is intercepting HTTPS** on your
-machine and presenting a certificate Node doesn't trust by default.
-
-Fix (already applied on this dev machine): export the certificates your OS already trusts
-into a PEM bundle and point Node at it via `NODE_EXTRA_CA_CERTS`.
-
-```powershell
-# 1. Export the Windows trust store (includes the AV/proxy root) to a PEM bundle
-$out = "$PWD\certs\ca-bundle.pem"
-New-Item -ItemType Directory -Force certs | Out-Null
-$certs = Get-ChildItem Cert:\LocalMachine\Root, Cert:\LocalMachine\CA, Cert:\CurrentUser\Root
-$sb = New-Object System.Text.StringBuilder
-foreach ($c in $certs) {
-  [void]$sb.AppendLine("-----BEGIN CERTIFICATE-----")
-  [void]$sb.AppendLine([Convert]::ToBase64String($c.RawData,'InsertLineBreaks'))
-  [void]$sb.AppendLine("-----END CERTIFICATE-----")
-}
-[System.IO.File]::WriteAllText($out, $sb.ToString())
-
-# 2. Make every local Node process trust it (persists; restart the terminal after)
-setx NODE_EXTRA_CA_CERTS "$out"
-```
-
-`certs/` is git-ignored, so this machine-specific bundle never reaches your VPS (which
-won't have the interception and doesn't need it). To undo: delete the env var with
-`setx NODE_EXTRA_CA_CERTS ""` (or remove it in *Environment Variables*). The cleaner
-long-term fix is to disable HTTPS/SSL scanning for these hosts in your antivirus.
-
-> `setx` only affects **new** processes — restart your terminal (and the IDE) once before
-> running `npm run dev`.
-
-**Deploying to Fly behind the same interceptor:** `flyctl` is a Go binary and ignores
-`NODE_EXTRA_CA_CERTS`, and Fly's "Depot" builder uses a TLS/gRPC channel the interceptor
-breaks (`x509: certificate signed by unknown authority`). Two fixes, both already applied:
-point Go at the same bundle and skip Depot.
-
-```powershell
-setx SSL_CERT_FILE "$PWD\certs\ca-bundle.pem"   # Go reads this; restart terminal after
-npm run deploy                                   # = fly deploy --depot=false
-```
+If `npm install` or Google sign-in fails with certificate errors on a Windows dev machine,
+antivirus or a corporate proxy is intercepting HTTPS. The fix (export the OS trust store
+to a PEM bundle + `NODE_EXTRA_CA_CERTS`, plus the flyctl/Depot variant) is documented in
+**[docs/windows-cert-troubleshooting.md](docs/windows-cert-troubleshooting.md)**.
 
 ---
 
@@ -394,3 +309,9 @@ Every SQL statement lives in `server/db.js`, behind these functions:
 `findOrCreateUser`, `getUserById`, `listWorkouts`, `upsertWorkout`, `deleteWorkout`,
 `importWorkouts`. Reimplement just those against `pg` (the `ON CONFLICT (user_id, client_id)`
 upsert and JSON column both port directly to Postgres) and nothing else has to change.
+
+---
+
+## 12. License
+
+[MIT](LICENSE).

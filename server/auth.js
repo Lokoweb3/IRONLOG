@@ -11,6 +11,7 @@ import { Router } from "express";
 import jwt from "jsonwebtoken";
 import { OAuth2Client } from "google-auth-library";
 import { findOrCreateUser, getUserById, exportUserData, deleteUserAccount } from "./db.js";
+import { createDemoUser } from "./demo.js";
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const SESSION_SECRET = process.env.SESSION_SECRET;
@@ -93,6 +94,20 @@ authRouter.post("/google", async (req, res) => {
   } catch (err) {
     console.error("[auth] verifyIdToken failed:", err.message);
     res.status(401).json({ error: "token verification failed" });
+  }
+});
+
+// POST /auth/demo — create a throwaway, pre-seeded demo account and sign the
+// visitor into it. Rate-limited in app.js with the same limiter as /auth/google;
+// accounts older than 24h are purged inside createDemoUser().
+authRouter.post("/demo", (req, res) => {
+  try {
+    const user = createDemoUser();
+    setSessionCookie(res, user.id);
+    res.json({ user });
+  } catch (err) {
+    console.error("[auth] demo account creation failed:", err.message);
+    res.status(500).json({ error: "could not create a demo account — please try again" });
   }
 });
 
